@@ -1,15 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PlayCircle, RefreshCw, ShieldCheck, WalletCards } from "lucide-react";
+import {
+	PlayCircle,
+	RefreshCw,
+	Rocket,
+	ShieldCheck,
+	WalletCards,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
 	buildDryRunPreview,
-	type DryRunPreview,
+	executeOrder,
 	fetchAccount,
 	fetchDecision,
 	fetchMarketState,
+	fetchOrderStatus,
+	fetchPositions,
 	fetchRisk,
 	fetchSpyQuote,
+	type PocOrderResult,
 } from "@/api/market-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,9 +39,32 @@ const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
 export function TradingDashboard() {
 	const [symbol, setSymbol] = useState(env.VITE_DEFAULT_SYMBOL.toUpperCase());
 	const queryClient = useQueryClient();
+	const [orderResult, setOrderResult] = useState<PocOrderResult | null>(null);
 	const [decisionLog, setDecisionLog] = useState<
-		Array<{ id: string; at: string; preview: DryRunPreview }>
+		Array<{
+			id: string;
+			at: string;
+			kind: "DRY_RUN" | "ORDER";
+			symbol: string;
+			action: string;
+			status: string;
+			size: number;
+		}>
 	>([]);
+
+	const pushLog = (entry: {
+		kind: "DRY_RUN" | "ORDER";
+		symbol: string;
+		action: string;
+		status: string;
+		size: number;
+	}) =>
+		setDecisionLog((items) =>
+			[
+				{ id: crypto.randomUUID(), at: new Date().toISOString(), ...entry },
+				...items,
+			].slice(0, 10),
+		);
 
 	const marketQuery = useQuery({
 		queryKey: ["market", symbol],
@@ -59,6 +91,11 @@ export function TradingDashboard() {
 		queryFn: () => fetchSpyQuote(symbol),
 		refetchInterval: 30_000,
 	});
+	const positionsQuery = useQuery({
+		queryKey: ["positions"],
+		queryFn: fetchPositions,
+		refetchInterval: 30_000,
+	});
 
 	const refresh = useMutation({
 		mutationFn: async () => {
@@ -70,13 +107,51 @@ export function TradingDashboard() {
 		mutationFn: () => fetchDecision(symbol),
 		onSuccess: (decision) => {
 			const preview = buildDryRunPreview(decision);
-			setDecisionLog((items) =>
-				[
-					{ id: crypto.randomUUID(), at: new Date().toISOString(), preview },
-					...items,
-				].slice(0, 10),
-			);
+			pushLog({
+				kind: "DRY_RUN",
+				symbol: decision.symbol,
+				action: decision.action,
+				status: preview.status,
+				size: decision.position_size,
+			});
 			queryClient.setQueryData(["decision", symbol], decision);
+		},
+	});
+
+	const execute = useMutation({
+		mutationFn: () => executeOrder(symbol),
+		onSuccess: async (result) => {
+			setOrderResult(result);
+			pushLog({
+				kind: "ORDER",
+				symbol: result.decision?.symbol ?? symbol,
+				action: result.decision?.action ?? "—",
+				status: result.status,
+				size: result.notional ?? result.decision?.position_size ?? 0,
+			});
+			// Re-lee posiciones/cuenta y, si sigue pendiente, reconcilia por poll.
+			await queryClient.invalidateQueries({ queryKey: ["positions"] });
+			await queryClient.invalidateQueries({ queryKey: ["account"] });
+			if (
+				result.order_id &&
+				["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(result.status)
+			) {
+				const orderId = result.order_id;
+				for (let i = 0; i < 5; i++) {
+					await new Promise((r) => setTimeout(r, 1000));
+					const latest = await fetchOrderStatus(orderId);
+					const status = classifyStatus(latest.status);
+					setOrderResult((prev) => ({ ...prev, ...latest, status }));
+					if (["FILLED", "REJECTED"].includes(status)) break;
+				}
+				await queryClient.invalidateQueries({ queryKey: ["positions"] });
+			}
+		},
+		onError: (err) => {
+			setOrderResult({
+				status: "FAILED",
+				error: err instanceof Error ? err.message : "execute failed",
+			});
 		},
 	});
 
@@ -85,6 +160,7 @@ export function TradingDashboard() {
 	const decision = decisionQuery.data;
 	const account = accountQuery.data;
 	const quote = quoteQuery.data;
+	const positions = positionsQuery.data?.positions ?? [];
 	const dryRunPreview = useMemo(
 		() => (decision ? buildDryRunPreview(decision) : null),
 		[decision],
@@ -146,6 +222,14 @@ export function TradingDashboard() {
 					>
 						<PlayCircle />
 						Dry-run
+					</Button>
+					<Button
+						type="button"
+						onClick={() => execute.mutate()}
+						disabled={execute.isPending}
+					>
+						<Rocket className={execute.isPending ? "animate-pulse" : ""} />
+						{execute.isPending ? "Executing…" : "Execute"}
 					</Button>
 				</div>
 			</header>
@@ -281,6 +365,111 @@ export function TradingDashboard() {
 				</Card>
 
 				<Card className="lg:col-span-3">
+					<CardHeader className="flex flex-row items-center justify-between">
+						<CardTitle className="flex items-center gap-2">
+							<Rocket className="size-5 text-indigo-300" />
+							Order Execution
+						</CardTitle>
+						<span className={orderStatusClass(orderResult?.status)}>
+							{orderResult?.status ?? "IDLE"}
+						</span>
+					</CardHeader>
+					<CardContent>
+						<div className="grid gap-4 md:grid-cols-3">
+							<Step
+								label="1 · Order submitted"
+								ok={Boolean(orderResult?.order_id)}
+								detail={
+									orderResult?.order_id
+										? `#${orderResult.order_id.slice(0, 8)}`
+										: orderResult?.status === "NO_TRADE"
+											? "No trade (HOLD)"
+											: (orderResult?.error ?? "—")
+								}
+							/>
+							<Step
+								label="2 · Order filled"
+								ok={orderResult?.status === "FILLED"}
+								pending={["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(
+									orderResult?.status ?? "",
+								)}
+								detail={
+									orderResult?.status === "FILLED"
+										? `${formatNumber(orderResult.filled_qty, 4)} @ ${formatMoney(
+												orderResult.filled_avg_price ?? undefined,
+											)}`
+										: (orderResult?.reason ??
+											orderResult?.order_status ??
+											"not filled")
+								}
+							/>
+							<Step
+								label="3 · Position created"
+								ok={positions.some(
+									(p) => p.symbol === (orderResult?.decision?.symbol ?? symbol),
+								)}
+								detail={
+									positions.find(
+										(p) =>
+											p.symbol === (orderResult?.decision?.symbol ?? symbol),
+									)
+										? "in portfolio"
+										: "not created"
+								}
+							/>
+						</div>
+						{orderResult?.mode === "demo" ? (
+							<p className="mt-4 text-xs text-amber-300">
+								Demo mode: sin credenciales Alpaca paper; nada se envió al
+								broker.
+							</p>
+						) : null}
+					</CardContent>
+				</Card>
+
+				<Card className="lg:col-span-3">
+					<CardHeader>
+						<CardTitle>Positions</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>Symbol</TableHead>
+									<TableHead>Side</TableHead>
+									<TableHead>Qty</TableHead>
+									<TableHead>Avg entry</TableHead>
+									<TableHead>Market value</TableHead>
+									<TableHead>Unrealized P/L</TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{positions.map((p) => (
+									<TableRow key={p.symbol}>
+										<TableCell>{p.symbol}</TableCell>
+										<TableCell>{p.side}</TableCell>
+										<TableCell>{formatNumber(p.qty, 4)}</TableCell>
+										<TableCell>{formatMoney(p.avg_entry_price)}</TableCell>
+										<TableCell>{formatMoney(p.market_value)}</TableCell>
+										<TableCell>{formatMoney(p.unrealized_pl)}</TableCell>
+									</TableRow>
+								))}
+								{positions.length === 0 && (
+									<TableRow>
+										<TableCell
+											colSpan={6}
+											className="py-4 text-muted-foreground"
+										>
+											No open positions.
+										</TableCell>
+									</TableRow>
+								)}
+							</TableBody>
+						</Table>
+					</CardContent>
+				</Card>
+
+				<Card className="lg:col-span-3">
 					<CardHeader>
 						<CardTitle>Decision Log</CardTitle>
 					</CardHeader>
@@ -289,31 +478,33 @@ export function TradingDashboard() {
 							<TableHeader>
 								<TableRow>
 									<TableHead>Time</TableHead>
+									<TableHead>Type</TableHead>
 									<TableHead>Symbol</TableHead>
 									<TableHead>Action</TableHead>
 									<TableHead>Status</TableHead>
-									<TableHead>Position</TableHead>
+									<TableHead>Size</TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
 								{decisionLog.map((entry) => (
 									<TableRow key={entry.id}>
 										<TableCell>{new Date(entry.at).toLocaleString()}</TableCell>
-										<TableCell>{entry.preview.decision.symbol}</TableCell>
-										<TableCell>{entry.preview.decision.action}</TableCell>
-										<TableCell>{entry.preview.status}</TableCell>
 										<TableCell>
-											{formatMoney(entry.preview.decision.position_size)}
+											{entry.kind === "ORDER" ? "Order" : "Dry-run"}
 										</TableCell>
+										<TableCell>{entry.symbol}</TableCell>
+										<TableCell>{entry.action}</TableCell>
+										<TableCell>{entry.status}</TableCell>
+										<TableCell>{formatMoney(entry.size)}</TableCell>
 									</TableRow>
 								))}
 								{decisionLog.length === 0 && (
 									<TableRow>
 										<TableCell
-											colSpan={5}
+											colSpan={6}
 											className="py-4 text-muted-foreground"
 										>
-											No dry-run entries yet.
+											No entries yet.
 										</TableCell>
 									</TableRow>
 								)}
@@ -348,6 +539,63 @@ function Metric({ label, value }: { label: string; value: string }) {
 			<div className="mt-1 text-base text-foreground">{value}</div>
 		</div>
 	);
+}
+
+function Step({
+	label,
+	ok,
+	pending,
+	detail,
+}: {
+	label: string;
+	ok: boolean;
+	pending?: boolean;
+	detail?: string;
+}) {
+	const state = ok ? "OK" : pending ? "PENDING" : "NO";
+	const mark = ok ? "✓" : pending ? "…" : "✕";
+	const color = ok
+		? "text-emerald-300"
+		: pending
+			? "text-amber-300"
+			: "text-rose-300";
+	return (
+		<div className="rounded-lg border border-border/60 bg-black/20 p-4">
+			<div className="text-xs text-muted-foreground">{label}</div>
+			<div className={`mt-1 text-lg font-semibold ${color}`}>
+				{mark} {state}
+			</div>
+			<div className="mt-1 truncate text-xs text-muted-foreground">
+				{detail ?? "—"}
+			</div>
+		</div>
+	);
+}
+
+function classifyStatus(status: string | undefined): string {
+	const s = (status ?? "").toLowerCase();
+	if (s === "filled") return "FILLED";
+	if (["rejected", "canceled", "expired", "done_for_day"].includes(s))
+		return "REJECTED";
+	if (["accepted", "new", "pending_new", "accepted_for_bidding"].includes(s))
+		return "ACCEPTED";
+	if (s === "partially_filled") return "PARTIALLY_FILLED";
+	if (s === "submitted") return "SUBMITTED";
+	return (status ?? "—").toUpperCase();
+}
+
+function orderStatusClass(status: string | undefined): string {
+	const base = "text-sm font-semibold";
+	if (status === "FILLED") return `${base} text-emerald-300`;
+	if (status === "REJECTED" || status === "FAILED")
+		return `${base} text-rose-300`;
+	if (
+		status === "SUBMITTED" ||
+		status === "ACCEPTED" ||
+		status === "PARTIALLY_FILLED"
+	)
+		return `${base} text-amber-300`;
+	return `${base} text-muted-foreground`;
 }
 
 function toNumber(value: string | number | undefined): number | undefined {

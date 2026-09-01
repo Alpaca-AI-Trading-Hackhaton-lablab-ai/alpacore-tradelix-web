@@ -47,6 +47,42 @@ export type PocQuote = {
 	[key: string]: unknown;
 };
 
+export type PocOrderResult = {
+	status:
+		| "FILLED"
+		| "ACCEPTED"
+		| "PARTIALLY_FILLED"
+		| "REJECTED"
+		| "SUBMITTED"
+		| "NO_TRADE"
+		| "FAILED"
+		| string;
+	order_id?: string;
+	order_status?: string;
+	filled_qty?: number;
+	filled_avg_price?: number | null;
+	notional?: number | null;
+	reason?: string | null;
+	mode?: string;
+	decision?: PocDecision;
+	error?: string;
+};
+
+export type PocPosition = {
+	symbol: string;
+	qty: number;
+	side: string;
+	avg_entry_price: number;
+	market_value: number;
+	unrealized_pl: number;
+};
+
+export type PocPositions = {
+	mode: string;
+	positions: PocPosition[];
+	warning?: string;
+};
+
 export type DryRunPreview = {
 	status: "DRY_RUN" | "NO_TRADE";
 	reason: string;
@@ -66,6 +102,12 @@ const withSymbol = (path: string, symbol: string) =>
 
 async function getJson<T>(path: string): Promise<T> {
 	const res = await fetch(`${base()}${path}`);
+	if (!res.ok) throw new Error(`${path} ${res.status}`);
+	return res.json() as Promise<T>;
+}
+
+async function postJson<T>(path: string): Promise<T> {
+	const res = await fetch(`${base()}${path}`, { method: "POST" });
 	if (!res.ok) throw new Error(`${path} ${res.status}`);
 	return res.json() as Promise<T>;
 }
@@ -90,6 +132,20 @@ export async function fetchAccount(): Promise<PocAccount> {
 
 export async function fetchSpyQuote(symbol: string): Promise<PocQuote> {
 	return getJson<PocQuote>(withSymbol("/spy", symbol));
+}
+
+export async function executeOrder(symbol: string): Promise<PocOrderResult> {
+	return postJson<PocOrderResult>(withSymbol("/execute", symbol));
+}
+
+export async function fetchOrderStatus(
+	orderId: string,
+): Promise<PocOrderResult> {
+	return getJson<PocOrderResult>(`/order/${encodeURIComponent(orderId)}`);
+}
+
+export async function fetchPositions(): Promise<PocPositions> {
+	return getJson<PocPositions>("/positions");
 }
 
 export function buildDryRunPreview(decision: PocDecision): DryRunPreview {
