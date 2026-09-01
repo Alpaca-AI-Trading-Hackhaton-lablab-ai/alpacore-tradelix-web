@@ -90,7 +90,7 @@ export type PocPipelineNode = {
 	node: string;
 	status: PocNodeStatus;
 	message?: string | null;
-	// biome-ignore lint/suspicious/noExplicitAny: la salida varía por agente
+	// biome-ignore lint/suspicious/noExplicitAny: output shape varies per agent
 	output?: any;
 	ts?: number;
 };
@@ -185,8 +185,8 @@ export type StreamHandlers = {
 };
 
 /**
- * Abre un SSE contra /pipeline/stream y llama onNode por cada evento de nodo
- * (running -> done|error). Devuelve el EventSource para poder cerrarlo.
+ * Opens an SSE connection to /pipeline/stream and calls onNode for each node
+ * event (running -> done|error). Returns the EventSource so it can be closed.
  */
 export function streamPipeline(
 	symbol: string,

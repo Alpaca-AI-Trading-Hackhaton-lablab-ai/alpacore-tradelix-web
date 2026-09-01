@@ -130,7 +130,7 @@ export function TradingDashboard() {
 				status: result.status,
 				size: result.notional ?? result.decision?.position_size ?? 0,
 			});
-			// Re-lee posiciones/cuenta y, si sigue pendiente, reconcilia por poll.
+			// Re-read positions/account and, if still pending, reconcile by polling.
 			await queryClient.invalidateQueries({ queryKey: ["positions"] });
 			await queryClient.invalidateQueries({ queryKey: ["account"] });
 			if (
@@ -212,7 +212,7 @@ export function TradingDashboard() {
 				<div>
 					<Badge variant="success">{env.VITE_APP_TITLE}</Badge>
 					<div className="mt-2 flex flex-wrap items-center gap-3">
-						<h1 className="font-serif text-4xl text-white">{symbol}</h1>
+						<h1 className="font-serif text-4xl text-foreground">{symbol}</h1>
 						<select
 							value={symbol}
 							onChange={(event) => setSymbol(event.target.value)}
@@ -261,7 +261,7 @@ export function TradingDashboard() {
 			<main className="mx-auto grid max-w-6xl gap-5 px-6 pb-12 lg:grid-cols-3">
 				{error ? (
 					<Card className="border-destructive/40 bg-destructive/10 lg:col-span-3">
-						<CardContent className="pt-5 text-sm text-rose-100">
+						<CardContent className="pt-5 text-sm text-destructive">
 							{error instanceof Error ? error.message : "API request failed"}
 						</CardContent>
 					</Card>
@@ -270,11 +270,8 @@ export function TradingDashboard() {
 				<AgentGraph symbol={symbol} orderResult={orderResult} />
 
 				<Card className="lg:col-span-2">
-					<CardHeader className="flex flex-row items-center justify-between">
+					<CardHeader>
 						<CardTitle>Price</CardTitle>
-						<span className="text-sm text-muted-foreground">
-							{formatMoney(market?.price ?? quote?.price)}
-						</span>
 					</CardHeader>
 					<CardContent>
 						<PriceChart
@@ -342,16 +339,12 @@ export function TradingDashboard() {
 				<Card>
 					<CardHeader>
 						<CardTitle className="flex items-center gap-2">
-							<WalletCards className="size-5 text-sky-300" />
+							<WalletCards className="size-5 text-muted-foreground" />
 							Account
 						</CardTitle>
 					</CardHeader>
 					<CardContent>
 						<dl className="space-y-2 text-sm text-muted-foreground">
-							<Row
-								label="Equity"
-								value={formatMoney(toNumber(account?.equity))}
-							/>
 							<Row label="Cash" value={formatMoney(toNumber(account?.cash))} />
 							<Row label="Status" value={account?.status ?? "—"} />
 						</dl>
@@ -375,25 +368,34 @@ export function TradingDashboard() {
 							</div>
 						</div>
 						<div className="mt-5 grid gap-4 md:grid-cols-3">
-							<Metric label="Sentiment" value={decision?.sentiment ?? "—"} />
-							<Metric
-								label="Technical"
-								value={decision?.technical_signal ?? "—"}
-							/>
 							<Metric label="Dry-run" value={dryRunPreview?.status ?? "—"} />
+							<Metric
+								label="Side"
+								value={dryRunPreview?.would_call?.side?.toUpperCase() ?? "—"}
+							/>
+							<Metric
+								label="Notional"
+								value={
+									dryRunPreview?.would_call
+										? formatMoney(
+												dryRunPreview.would_call.notional_position_size,
+											)
+										: "—"
+								}
+							/>
 						</div>
-						<pre className="mt-5 overflow-x-auto rounded-lg bg-black/30 p-4 text-xs text-muted-foreground">
-							{dryRunPreview
-								? JSON.stringify(dryRunPreview, null, 2)
-								: "No decision yet"}
-						</pre>
+						<p className="mt-4 text-sm text-muted-foreground">
+							{dryRunPreview?.would_call
+								? `Would call ${dryRunPreview.would_call.tool} · ${dryRunPreview.reason}`
+								: (dryRunPreview?.reason ?? "No decision yet")}
+						</p>
 					</CardContent>
 				</Card>
 
 				<Card className="lg:col-span-3">
 					<CardHeader className="flex flex-row items-center justify-between">
 						<CardTitle className="flex items-center gap-2">
-							<Rocket className="size-5 text-indigo-300" />
+							<Rocket className="size-5 text-muted-foreground" />
 							Order Execution
 						</CardTitle>
 						<span className={orderStatusClass(orderResult?.status)}>
@@ -446,7 +448,7 @@ export function TradingDashboard() {
 						</div>
 						{orderResult?.mode === "demo" ? (
 							<p className="mt-4 text-xs text-gold">
-								Demo mode: sin credenciales Alpaca paper; nada se envió al
+								Demo mode: no Alpaca paper credentials; nothing was sent to the
 								broker.
 							</p>
 						) : null}
@@ -593,7 +595,7 @@ function Step({
 	const mark = ok ? "✓" : pending ? "…" : "✕";
 	const color = ok ? "text-long" : pending ? "text-gold" : "text-short";
 	return (
-		<div className="rounded-lg border border-border/60 bg-black/20 p-4">
+		<div className="rounded-lg border border-border/60 bg-muted/40 p-4">
 			<div className="text-xs text-muted-foreground">{label}</div>
 			<div className={`mt-1 text-lg font-semibold ${color}`}>
 				{mark} {state}

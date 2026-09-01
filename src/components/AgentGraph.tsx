@@ -13,7 +13,13 @@ import {
 	Square,
 	Wallet,
 } from "lucide-react";
-import { type ComponentType, useEffect, useRef, useState } from "react";
+import {
+	type ComponentType,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	type PocNodeStatus,
 	type PocOrderResult,
@@ -30,7 +36,7 @@ type NodeDef = {
 	row: number;
 };
 
-// Topología fija del pipeline (backend.py: run_pipeline). Cada nodo = un agente.
+// Fixed pipeline topology (backend.py: run_pipeline). Each node = one agent.
 const NODES: NodeDef[] = [
 	{ id: "news", label: "News", icon: Newspaper, col: 0, row: 0 },
 	{ id: "features", label: "Features", icon: Activity, col: 0, row: 1 },
@@ -64,7 +70,7 @@ const EDGES: [string, string][] = [
 	["decision", "execution"],
 ];
 
-// Geometría del lienzo.
+// Canvas geometry.
 const W = 158;
 const H = 66;
 const HGAP = 46;
@@ -107,7 +113,7 @@ function orderToStatus(order?: PocOrderResult | null): NodeState {
 const initialStates = (): Record<string, NodeState> =>
 	Object.fromEntries(NODES.map((n) => [n.id, { status: "idle" }]));
 
-// Claves de TanStack Query que cada nodo alimenta, para sembrar el cache.
+// TanStack Query keys each node feeds, used to seed the cache.
 const CACHE_KEY: Record<string, (symbol: string) => unknown[]> = {
 	market_state: (s) => ["market", s],
 	risk: (s) => ["risk", s],
@@ -128,20 +134,10 @@ export function AgentGraph({
 	const [running, setRunning] = useState(false);
 	const esRef = useRef<EventSource | null>(null);
 
-	// El nodo de ejecución refleja el resultado del mutation `execute`.
+	// The execution node reflects the result of the `execute` mutation.
 	const execState = orderToStatus(orderResult);
 
-	useEffect(() => {
-		return () => esRef.current?.close();
-	}, []);
-
-	function stop() {
-		esRef.current?.close();
-		esRef.current = null;
-		setRunning(false);
-	}
-
-	function run() {
+	const run = useCallback(() => {
 		esRef.current?.close();
 		setStates(initialStates());
 		setRunning(true);
@@ -151,7 +147,7 @@ export function AgentGraph({
 					...prev,
 					[ev.node]: { status: ev.status, message: ev.message ?? null },
 				}));
-				// Siembra el cache para que las tarjetas se actualicen en el acto.
+				// Seed the cache so the cards update instantly from the same trace.
 				const keyFn = CACHE_KEY[ev.node];
 				if (ev.status === "done" && keyFn && ev.output) {
 					queryClient.setQueryData(keyFn(symbol), ev.output);
@@ -160,7 +156,20 @@ export function AgentGraph({
 			onDone: () => setRunning(false),
 			onError: () => setRunning(false),
 		});
+	}, [symbol, queryClient]);
+
+	function stop() {
+		esRef.current?.close();
+		esRef.current = null;
+		setRunning(false);
 	}
+
+	// Auto-run: stream the pipeline on mount and whenever the symbol changes, so
+	// the graph and the cards it seeds stay live without a manual click.
+	useEffect(() => {
+		run();
+		return () => esRef.current?.close();
+	}, [run]);
 
 	const stateOf = (id: string): NodeState =>
 		id === "execution" ? execState : (states[id] ?? { status: "idle" });
@@ -174,7 +183,7 @@ export function AgentGraph({
 							Agent Pipeline
 						</h2>
 						<p className="text-xs text-muted-foreground">
-							{NODES.length} agentes · SSE en vivo · {symbol}
+							{NODES.length} agents · live SSE · {symbol}
 						</p>
 					</div>
 					<div className="flex items-center gap-3">
@@ -205,7 +214,7 @@ export function AgentGraph({
 							height={CANVAS_H}
 							aria-hidden="true"
 						>
-							<title>Aristas del grafo de agentes</title>
+							<title>Agent graph edges</title>
 							{EDGES.map(([from, to]) => {
 								const a = NODES.find((n) => n.id === from);
 								const b = NODES.find((n) => n.id === to);

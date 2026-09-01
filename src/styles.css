@@ -26,7 +26,7 @@
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
-	/* Acento estilo Binance Futures */
+	/* Binance Futures-style accents */
 	--color-long: var(--long);
 	--color-short: var(--short);
 	--color-gold: var(--gold);
@@ -68,7 +68,7 @@
 }
 
 .dark {
-	/* Paleta Binance Futures: fondo casi-negro, panel #181a20, acento dorado */
+	/* Binance Futures palette: near-black background, #181a20 panel, gold accent */
 	--background: #0b0e11;
 	--foreground: #eaecef;
 	--card: #181a20;
@@ -115,7 +115,7 @@ h1,
 	font-family: Fraunces, Georgia, serif;
 }
 
-/* Flujo de datos por las aristas del grafo de agentes */
+/* Data flow along the agent graph edges */
 @keyframes edge-flow {
 	to {
 		stroke-dashoffset: -16;
@@ -127,7 +127,7 @@ h1,
 	animation: edge-flow 0.6s linear infinite;
 }
 
-/* Latido del nodo en ejecución */
+/* Pulse for the running node */
 @keyframes node-glow {
 	0%,
 	100% {
