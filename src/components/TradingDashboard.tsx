@@ -1,29 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	KeyRound,
 	PlayCircle,
 	Power,
 	RefreshCw,
 	Rocket,
+	ScrollText,
 	ShieldAlert,
 	ShieldCheck,
 	WalletCards,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
 	buildDryRunPreview,
 	executeOrder,
 	fetchAccount,
+	fetchBars,
 	fetchControl,
-	fetchDecision,
-	fetchMarketState,
+	fetchLogs,
+	fetchModels,
 	fetchOrderStatus,
-	fetchPipeline,
 	fetchPositions,
-	fetchRisk,
+	fetchSettings,
 	fetchSpyQuote,
+	INDICATOR_OPTIONS,
+	type PipelineOpts,
+	type PocDecision,
 	type PocGate,
+	type PocMarketState,
 	type PocOrderResult,
+	type PocRisk,
+	type PocSettings,
+	saveSettings,
 	setArmed,
 	setKill,
 } from "@/api/market-client";
@@ -39,15 +48,89 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { env } from "@/env";
-import { AgentGraph } from "./AgentGraph";
+import { AgentGraph, type AgentSettings } from "./AgentGraph";
 import { PriceChart } from "./PriceChart";
 
 const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
+const ALL_INDICATORS = INDICATOR_OPTIONS.map((item) => item.id);
+
+const EMPTY_SETTINGS: AgentSettings = {
+	sentimentModel: "",
+	decisionModel: "",
+	deepSentiment: false,
+	deepDecision: false,
+	indicators: [...ALL_INDICATORS],
+	decisionIndicators: [...ALL_INDICATORS],
+};
+
+function agentsToSettings(
+	agents: PocSettings["agents"],
+	fallback: AgentSettings,
+): AgentSettings {
+	return {
+		sentimentModel: agents.sentiment.model || fallback.sentimentModel,
+		decisionModel: agents.decision.model || fallback.decisionModel,
+		deepSentiment: Boolean(agents.sentiment.deep),
+		deepDecision: Boolean(agents.decision.deep),
+		indicators: agents.technical.indicators?.length
+			? [...agents.technical.indicators]
+			: fallback.indicators,
+		decisionIndicators: agents.decision.indicators?.length
+			? [...agents.decision.indicators]
+			: fallback.decisionIndicators,
+	};
+}
+
+function settingsToAgents(settings: AgentSettings) {
+	return {
+		sentiment: {
+			model: settings.sentimentModel,
+			deep: settings.deepSentiment,
+		},
+		decision: {
+			model: settings.decisionModel,
+			deep: settings.deepDecision,
+			indicators: settings.decisionIndicators,
+		},
+		technical: { indicators: settings.indicators },
+		features: { indicators: settings.indicators },
+	};
+}
+
+function sourceBadge(source: string | undefined) {
+	if (source === "db") return "success" as const;
+	if (source === "env") return "warning" as const;
+	return "outline" as const;
+}
+
+function settingsToOpts(settings: AgentSettings): PipelineOpts {
+	const opts: PipelineOpts = {
+		deepSentiment: settings.deepSentiment,
+		deepDecision: settings.deepDecision,
+	};
+	if (settings.deepSentiment || settings.deepDecision) opts.deep = true;
+	if (settings.sentimentModel) opts.sentimentModel = settings.sentimentModel;
+	if (settings.decisionModel) opts.decisionModel = settings.decisionModel;
+	if (settings.indicators.length)
+		opts.indicators = settings.indicators.join(",");
+	if (settings.decisionIndicators.length)
+		opts.decisionIndicators = settings.decisionIndicators.join(",");
+	return opts;
+}
 
 export function TradingDashboard() {
 	const [symbol, setSymbol] = useState(env.VITE_DEFAULT_SYMBOL.toUpperCase());
 	const queryClient = useQueryClient();
 	const [orderResult, setOrderResult] = useState<PocOrderResult | null>(null);
+	const [settings, setSettings] = useState<AgentSettings>(EMPTY_SETTINGS);
+	const [keyDraft, setKeyDraft] = useState({
+		groq: "",
+		tavily: "",
+		alpaca_api_key: "",
+		alpaca_secret_key: "",
+	});
+	const hydrated = useRef(false);
+	const skipPersist = useRef(true);
 	const [decisionLog, setDecisionLog] = useState<
 		Array<{
 			id: string;
@@ -76,20 +159,26 @@ export function TradingDashboard() {
 			].slice(0, 10),
 		);
 
-	const marketQuery = useQuery({
+	const marketQuery = useQuery<PocMarketState>({
 		queryKey: ["market", symbol],
-		queryFn: () => fetchMarketState(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
-	const riskQuery = useQuery({
+	const riskQuery = useQuery<PocRisk>({
 		queryKey: ["risk", symbol],
-		queryFn: () => fetchRisk(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
-	const decisionQuery = useQuery({
+	const decisionQuery = useQuery<PocDecision>({
 		queryKey: ["decision", symbol],
-		queryFn: () => fetchDecision(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
 	const accountQuery = useQuery({
 		queryKey: ["account"],
@@ -111,13 +200,73 @@ export function TradingDashboard() {
 		queryFn: fetchControl,
 		refetchInterval: 30_000,
 	});
-	// Seeded live by AgentGraph's stream (["gate", symbol]); disabled so it only
-	// reads the cache and reacts, never triggering an extra pipeline run.
-	const gateQuery = useQuery({
+	const modelsQuery = useQuery({
+		queryKey: ["models"],
+		queryFn: fetchModels,
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+	const storedQuery = useQuery({
+		queryKey: ["settings"],
+		queryFn: fetchSettings,
+	});
+	const logsQuery = useQuery({
+		queryKey: ["logs", symbol],
+		queryFn: () => fetchLogs({ symbol, limit: 40 }),
+		refetchInterval: 10_000,
+	});
+	const catalog = modelsQuery.data;
+	const mergedSettings: AgentSettings = {
+		...settings,
+		sentimentModel:
+			settings.sentimentModel || catalog?.defaults.sentiment || "",
+		decisionModel: settings.decisionModel || catalog?.defaults.decision || "",
+	};
+	const pipelineOpts = settingsToOpts(mergedSettings);
+	const barsQuery = useQuery({
+		queryKey: ["bars", symbol, mergedSettings.indicators.join(",")],
+		queryFn: () =>
+			fetchBars(symbol, mergedSettings.indicators.join(",") || undefined),
+		refetchInterval: 60_000,
+	});
+	const gateQuery = useQuery<PocGate>({
 		queryKey: ["gate", symbol],
-		queryFn: () => fetchPipeline(symbol).then((p) => p.gate),
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
 		enabled: false,
 	});
+
+	useEffect(() => {
+		if (!storedQuery.data) return;
+		skipPersist.current = true;
+		hydrated.current = true;
+		setSettings((prev) => agentsToSettings(storedQuery.data.agents, prev));
+	}, [storedQuery.data]);
+
+	useEffect(() => {
+		if (!hydrated.current) return;
+		if (skipPersist.current) {
+			skipPersist.current = false;
+			return;
+		}
+		const toSave: AgentSettings = {
+			...settings,
+			sentimentModel:
+				settings.sentimentModel || catalog?.defaults.sentiment || "",
+			decisionModel: settings.decisionModel || catalog?.defaults.decision || "",
+		};
+		const handle = window.setTimeout(() => {
+			void saveSettings({ agents: settingsToAgents(toSave) }).then((view) =>
+				queryClient.setQueryData(["settings"], view),
+			);
+		}, 500);
+		return () => window.clearTimeout(handle);
+	}, [
+		settings,
+		catalog?.defaults.sentiment,
+		catalog?.defaults.decision,
+		queryClient,
+	]);
 
 	const arm = useMutation({
 		mutationFn: (enabled: boolean) => setArmed(enabled),
@@ -130,12 +279,46 @@ export function TradingDashboard() {
 
 	const refresh = useMutation({
 		mutationFn: async () => {
-			await queryClient.invalidateQueries();
+			await queryClient.invalidateQueries({ queryKey: ["account"] });
+			await queryClient.invalidateQueries({ queryKey: ["quote"] });
+			await queryClient.invalidateQueries({ queryKey: ["positions"] });
+			await queryClient.invalidateQueries({ queryKey: ["control"] });
+			await queryClient.invalidateQueries({ queryKey: ["bars"] });
+			await queryClient.invalidateQueries({ queryKey: ["logs"] });
+			await queryClient.invalidateQueries({ queryKey: ["settings"] });
+		},
+	});
+
+	const saveKeys = useMutation({
+		mutationFn: async () => {
+			const keys: Record<string, string> = {};
+			for (const [name, value] of Object.entries(keyDraft)) {
+				if (value.trim()) keys[name] = value.trim();
+			}
+			if (Object.keys(keys).length === 0) return storedQuery.data;
+			return saveSettings({ keys });
+		},
+		onSuccess: (view) => {
+			if (view) queryClient.setQueryData(["settings"], view);
+			setKeyDraft({
+				groq: "",
+				tavily: "",
+				alpaca_api_key: "",
+				alpaca_secret_key: "",
+			});
+			void queryClient.invalidateQueries({ queryKey: ["account"] });
 		},
 	});
 
 	const dryRun = useMutation({
-		mutationFn: () => fetchDecision(symbol),
+		mutationFn: async () => {
+			const cached = queryClient.getQueryData<PocDecision>([
+				"decision",
+				symbol,
+			]);
+			if (!cached) throw new Error("Run the pipeline first");
+			return cached;
+		},
 		onSuccess: (decision) => {
 			const preview = buildDryRunPreview(decision);
 			pushLog({
@@ -150,7 +333,7 @@ export function TradingDashboard() {
 	});
 
 	const execute = useMutation({
-		mutationFn: () => executeOrder(symbol),
+		mutationFn: () => executeOrder(symbol, pipelineOpts),
 		onSuccess: async (result) => {
 			setOrderResult(result);
 			pushLog({
@@ -164,6 +347,7 @@ export function TradingDashboard() {
 			// Re-read positions/account and, if still pending, reconcile by polling.
 			await queryClient.invalidateQueries({ queryKey: ["positions"] });
 			await queryClient.invalidateQueries({ queryKey: ["account"] });
+			await queryClient.invalidateQueries({ queryKey: ["logs"] });
 			if (
 				result.order_id &&
 				["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(result.status)
@@ -195,19 +379,9 @@ export function TradingDashboard() {
 	const positions = positionsQuery.data?.positions ?? [];
 	const control = controlQuery.data;
 	const gate: PocGate | undefined = orderResult?.gate ?? gateQuery.data;
-	const isLoading =
-		marketQuery.isLoading ||
-		riskQuery.isLoading ||
-		decisionQuery.isLoading ||
-		accountQuery.isLoading ||
-		quoteQuery.isLoading;
+	const isLoading = accountQuery.isLoading || quoteQuery.isLoading;
 	const error =
-		marketQuery.error ||
-		riskQuery.error ||
-		decisionQuery.error ||
-		accountQuery.error ||
-		quoteQuery.error ||
-		null;
+		accountQuery.error || quoteQuery.error || barsQuery.error || null;
 
 	return (
 		<div
@@ -302,6 +476,7 @@ export function TradingDashboard() {
 						type="button"
 						variant="secondary"
 						onClick={() => dryRun.mutate()}
+						disabled={!decision}
 					>
 						<PlayCircle />
 						Dry-run
@@ -326,17 +501,79 @@ export function TradingDashboard() {
 					</Card>
 				) : null}
 
-				<AgentGraph symbol={symbol} orderResult={orderResult} />
+				<AgentGraph
+					key={symbol}
+					symbol={symbol}
+					orderResult={orderResult}
+					allowlist={catalog?.allowlist ?? []}
+					settings={mergedSettings}
+					onSettings={setSettings}
+				/>
+
+				<Card className="lg:col-span-3">
+					<CardHeader>
+						<CardTitle className="flex items-center gap-2">
+							<KeyRound className="size-5 text-gold" />
+							API keys
+						</CardTitle>
+					</CardHeader>
+					<CardContent className="space-y-3">
+						<p className="text-xs text-muted-foreground">
+							Saved keys override .env. Leave blank to keep the current source.
+							Values are never shown after save.
+						</p>
+						<div className="grid gap-3 sm:grid-cols-2">
+							<KeyField
+								label="Groq"
+								source={storedQuery.data?.keys.groq}
+								value={keyDraft.groq}
+								onChange={(v) => setKeyDraft((s) => ({ ...s, groq: v }))}
+							/>
+							<KeyField
+								label="Tavily"
+								source={storedQuery.data?.keys.tavily}
+								value={keyDraft.tavily}
+								onChange={(v) => setKeyDraft((s) => ({ ...s, tavily: v }))}
+							/>
+							<KeyField
+								label="Alpaca key"
+								source={storedQuery.data?.keys.alpaca_api_key}
+								value={keyDraft.alpaca_api_key}
+								onChange={(v) =>
+									setKeyDraft((s) => ({ ...s, alpaca_api_key: v }))
+								}
+							/>
+							<KeyField
+								label="Alpaca secret"
+								source={storedQuery.data?.keys.alpaca_secret_key}
+								value={keyDraft.alpaca_secret_key}
+								onChange={(v) =>
+									setKeyDraft((s) => ({ ...s, alpaca_secret_key: v }))
+								}
+							/>
+						</div>
+						<Button
+							type="button"
+							variant="secondary"
+							onClick={() => saveKeys.mutate()}
+							disabled={saveKeys.isPending}
+						>
+							{saveKeys.isPending ? "Saving…" : "Save keys"}
+						</Button>
+						{storedQuery.error ? (
+							<p className="text-xs text-short">
+								Settings API unavailable (is Postgres up?)
+							</p>
+						) : null}
+					</CardContent>
+				</Card>
 
 				<Card className="lg:col-span-2">
 					<CardHeader>
 						<CardTitle>Price</CardTitle>
 					</CardHeader>
 					<CardContent>
-						<PriceChart
-							symbol={symbol}
-							lastPrice={market?.price ?? quote?.price ?? 100}
-						/>
+						<PriceChart symbol={symbol} bars={barsQuery.data} />
 					</CardContent>
 				</Card>
 
@@ -352,6 +589,8 @@ export function TradingDashboard() {
 							<Row label="RSI" value={formatNumber(market?.rsi, 1)} />
 							<Row label="SMA 20" value={formatNumber(market?.sma20, 2)} />
 							<Row label="SMA 50" value={formatNumber(market?.sma50, 2)} />
+							<Row label="EMA 20" value={formatNumber(market?.ema20, 2)} />
+							<Row label="MACD" value={formatNumber(market?.macd, 2)} />
 							<Row label="Signal" value={market?.technical_signal ?? "—"} />
 						</dl>
 					</CardContent>
@@ -424,8 +663,23 @@ export function TradingDashboard() {
 								<div className="text-foreground">
 									{formatMoney(decision?.position_size)}
 								</div>
+								{decision?.model ? (
+									<div className="mt-1 font-mono text-[11px]">
+										{decision.model.split("/").pop()}
+									</div>
+								) : null}
 							</div>
 						</div>
+						{decision?.rationale ? (
+							<p className="mt-3 text-sm text-muted-foreground">
+								{decision.rationale}
+							</p>
+						) : null}
+						{decision?.confidence != null ? (
+							<p className="mt-1 text-xs text-muted-foreground">
+								Confidence {formatNumber(decision.confidence, 0)}%
+							</p>
+						) : null}
 						<div className="mt-5 flex flex-wrap items-center gap-2">
 							<span className="text-xs uppercase tracking-wide text-muted-foreground">
 								Execution gate
@@ -635,6 +889,55 @@ export function TradingDashboard() {
 					</CardContent>
 				</Card>
 
+				<Card className="lg:col-span-3">
+					<CardHeader>
+						<CardTitle className="flex items-center gap-2">
+							<ScrollText className="size-5 text-muted-foreground" />
+							Invocations
+						</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>Time</TableHead>
+									<TableHead>Agent</TableHead>
+									<TableHead>Kind</TableHead>
+									<TableHead>Status</TableHead>
+									<TableHead>ms</TableHead>
+									<TableHead>Summary</TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{(logsQuery.data?.entries ?? []).map((entry) => (
+									<TableRow key={entry.id}>
+										<TableCell className="whitespace-nowrap">
+											{entry.ts ? new Date(entry.ts).toLocaleString() : "—"}
+										</TableCell>
+										<TableCell>{entry.agent_id}</TableCell>
+										<TableCell>{entry.kind}</TableCell>
+										<TableCell>{entry.status ?? "—"}</TableCell>
+										<TableCell>{entry.latency_ms ?? "—"}</TableCell>
+										<TableCell className="max-w-md truncate">
+											{entry.summary ?? "—"}
+										</TableCell>
+									</TableRow>
+								))}
+								{(logsQuery.data?.entries.length ?? 0) === 0 && (
+									<TableRow>
+										<TableCell
+											colSpan={6}
+											className="py-4 text-muted-foreground"
+										>
+											Run the pipeline to record invocations.
+										</TableCell>
+									</TableRow>
+								)}
+							</TableBody>
+						</Table>
+					</CardContent>
+				</Card>
+
 				{isLoading ? (
 					<div className="fixed right-5 bottom-5 rounded-lg border bg-card px-3 py-2 text-sm text-muted-foreground shadow-sm">
 						Loading
@@ -642,6 +945,37 @@ export function TradingDashboard() {
 				) : null}
 			</main>
 		</div>
+	);
+}
+
+function KeyField({
+	label,
+	source,
+	value,
+	onChange,
+}: {
+	label: string;
+	source?: string | undefined;
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<label className="block text-xs text-muted-foreground">
+			<span className="mb-1 flex items-center justify-between gap-2">
+				{label}
+				<Badge variant={sourceBadge(source)} className="uppercase">
+					{source ?? "—"}
+				</Badge>
+			</span>
+			<input
+				type="password"
+				autoComplete="off"
+				placeholder="unchanged"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+				className="h-9 w-full rounded-md border border-input bg-background px-3 font-mono text-sm text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+			/>
+		</label>
 	);
 }
 

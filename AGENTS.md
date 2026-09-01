@@ -1,5 +1,7 @@
 # AGENTS
 
-Dashboard TradeLix PoC. Consume el backend FastAPI Python vía `/api`.
-Usa Lightweight Charts v5 (`addSeries(AreaSeries, …)`).
-La UI es dry-run only: no llamar `/execute` desde el navegador.
+TradeLix PoC dashboard. Consumes the FastAPI Python backend via `/api`.
+Uses Lightweight Charts v5 (`addSeries(AreaSeries, …)`).
+The UI is dry-run only: do not call `/execute` from the browser.
+UI redistribution spec (do not implement unless asked): [docs/to-do-better-ui.md](docs/to-do-better-ui.md).
+All user-facing and agent-facing copy in this app stays in English.

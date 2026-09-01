@@ -1,13 +1,14 @@
 # TODO — TradeLix PoC Web
 
-## Siguiente
+## Next
 
-- [ ] Conectar chart a barras reales si el backend expone serie OHLCV.
-- [ ] Reemplazar Decision Log local por auditoría backend si se implementa.
-- [ ] Conectar botón de ejecución solo cuando `/execute` tenga dry-run/confirm server-side.
+- [ ] Wire the chart to real bars if the backend exposes an OHLCV series.
+- [ ] Replace the local Decision Log with backend audit when that exists.
+- [x] Deep research toggle + Groq model per agent (sentiment / decision) via `/models`.
+- [x] ReAct log (thought / tool / observation) from SSE `event: react`.
 
-## Más adelante
+## Later
 
-- [ ] Añadir panel de noticias resumidas.
-- [ ] Añadir estado explícito de paper trading y kill-switch.
-- [ ] Publicar build estático o container.
+- [ ] Add a summarized news panel.
+- [x] Show explicit paper-trading and kill-switch state.
+- [ ] Publish a static build or container.
