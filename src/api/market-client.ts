@@ -61,30 +61,35 @@ export type DryRunPreview = {
 
 const base = () => env.VITE_API_URL.replace(/\/$/, "");
 
+const withSymbol = (path: string, symbol: string) =>
+	`${path}?symbol=${encodeURIComponent(symbol)}`;
+
 async function getJson<T>(path: string): Promise<T> {
 	const res = await fetch(`${base()}${path}`);
 	if (!res.ok) throw new Error(`${path} ${res.status}`);
 	return res.json() as Promise<T>;
 }
 
-export async function fetchMarketState(): Promise<PocMarketState> {
-	return getJson<PocMarketState>("/market-state");
+export async function fetchMarketState(
+	symbol: string,
+): Promise<PocMarketState> {
+	return getJson<PocMarketState>(withSymbol("/market-state", symbol));
 }
 
-export async function fetchRisk(): Promise<PocRisk> {
-	return getJson<PocRisk>("/risk");
+export async function fetchRisk(symbol: string): Promise<PocRisk> {
+	return getJson<PocRisk>(withSymbol("/risk", symbol));
 }
 
-export async function fetchDecision(): Promise<PocDecision> {
-	return getJson<PocDecision>("/decision");
+export async function fetchDecision(symbol: string): Promise<PocDecision> {
+	return getJson<PocDecision>(withSymbol("/decision", symbol));
 }
 
 export async function fetchAccount(): Promise<PocAccount> {
 	return getJson<PocAccount>("/account");
 }
 
-export async function fetchSpyQuote(): Promise<PocQuote> {
-	return getJson<PocQuote>("/spy");
+export async function fetchSpyQuote(symbol: string): Promise<PocQuote> {
+	return getJson<PocQuote>(withSymbol("/spy", symbol));
 }
 
 export function buildDryRunPreview(decision: PocDecision): DryRunPreview {

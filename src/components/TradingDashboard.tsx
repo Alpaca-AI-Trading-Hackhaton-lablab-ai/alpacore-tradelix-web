@@ -25,8 +25,10 @@ import {
 import { env } from "@/env";
 import { PriceChart } from "./PriceChart";
 
+const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
+
 export function TradingDashboard() {
-	const symbol = env.VITE_DEFAULT_SYMBOL;
+	const [symbol, setSymbol] = useState(env.VITE_DEFAULT_SYMBOL.toUpperCase());
 	const queryClient = useQueryClient();
 	const [decisionLog, setDecisionLog] = useState<
 		Array<{ id: string; at: string; preview: DryRunPreview }>
@@ -34,17 +36,17 @@ export function TradingDashboard() {
 
 	const marketQuery = useQuery({
 		queryKey: ["market", symbol],
-		queryFn: fetchMarketState,
+		queryFn: () => fetchMarketState(symbol),
 		refetchInterval: 30_000,
 	});
 	const riskQuery = useQuery({
-		queryKey: ["risk"],
-		queryFn: fetchRisk,
+		queryKey: ["risk", symbol],
+		queryFn: () => fetchRisk(symbol),
 		refetchInterval: 30_000,
 	});
 	const decisionQuery = useQuery({
-		queryKey: ["decision"],
-		queryFn: fetchDecision,
+		queryKey: ["decision", symbol],
+		queryFn: () => fetchDecision(symbol),
 		refetchInterval: 30_000,
 	});
 	const accountQuery = useQuery({
@@ -54,7 +56,7 @@ export function TradingDashboard() {
 	});
 	const quoteQuery = useQuery({
 		queryKey: ["quote", symbol],
-		queryFn: fetchSpyQuote,
+		queryFn: () => fetchSpyQuote(symbol),
 		refetchInterval: 30_000,
 	});
 
@@ -65,7 +67,7 @@ export function TradingDashboard() {
 	});
 
 	const dryRun = useMutation({
-		mutationFn: fetchDecision,
+		mutationFn: () => fetchDecision(symbol),
 		onSuccess: (decision) => {
 			const preview = buildDryRunPreview(decision);
 			setDecisionLog((items) =>
@@ -74,7 +76,7 @@ export function TradingDashboard() {
 					...items,
 				].slice(0, 10),
 			);
-			queryClient.setQueryData(["decision"], decision);
+			queryClient.setQueryData(["decision", symbol], decision);
 		},
 	});
 
@@ -109,7 +111,21 @@ export function TradingDashboard() {
 			<header className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4 px-6 pt-8 pb-5">
 				<div>
 					<Badge variant="success">{env.VITE_APP_TITLE}</Badge>
-					<h1 className="mt-2 font-serif text-4xl text-white">{symbol}</h1>
+					<div className="mt-2 flex flex-wrap items-center gap-3">
+						<h1 className="font-serif text-4xl text-white">{symbol}</h1>
+						<select
+							value={symbol}
+							onChange={(event) => setSymbol(event.target.value)}
+							className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+							aria-label="Symbol"
+						>
+							{SYMBOLS.map((item) => (
+								<option key={item} value={item}>
+									{item}
+								</option>
+							))}
+						</select>
+					</div>
 					<p className="mt-2 max-w-xl text-sm text-muted-foreground">
 						Python PoC dashboard
 					</p>
