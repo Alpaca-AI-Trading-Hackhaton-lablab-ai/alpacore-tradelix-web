@@ -38,6 +38,7 @@ export type PocAccount = {
 	cash?: string | number;
 	buying_power?: string | number;
 	status?: string;
+	mode?: string;
 	[key: string]: unknown;
 };
 
@@ -81,6 +82,31 @@ export type PocPositions = {
 	mode: string;
 	positions: PocPosition[];
 	warning?: string;
+};
+
+export type PocNodeStatus = "idle" | "running" | "done" | "error";
+
+export type PocPipelineNode = {
+	node: string;
+	status: PocNodeStatus;
+	message?: string | null;
+	// biome-ignore lint/suspicious/noExplicitAny: la salida varía por agente
+	output?: any;
+	ts?: number;
+};
+
+export type PocPipeline = {
+	symbol: string;
+	nodes: PocPipelineNode[];
+	news?: unknown;
+	sentiment?: unknown;
+	options?: unknown;
+	features?: unknown;
+	technical?: unknown;
+	market_state?: PocMarketState;
+	account?: PocAccount;
+	risk?: PocRisk;
+	decision?: PocDecision;
 };
 
 export type DryRunPreview = {
@@ -146,6 +172,48 @@ export async function fetchOrderStatus(
 
 export async function fetchPositions(): Promise<PocPositions> {
 	return getJson<PocPositions>("/positions");
+}
+
+export async function fetchPipeline(symbol: string): Promise<PocPipeline> {
+	return getJson<PocPipeline>(withSymbol("/pipeline", symbol));
+}
+
+export type StreamHandlers = {
+	onNode: (node: PocPipelineNode) => void;
+	onDone?: () => void;
+	onError?: (err: unknown) => void;
+};
+
+/**
+ * Abre un SSE contra /pipeline/stream y llama onNode por cada evento de nodo
+ * (running -> done|error). Devuelve el EventSource para poder cerrarlo.
+ */
+export function streamPipeline(
+	symbol: string,
+	handlers: StreamHandlers,
+): EventSource {
+	const url = `${base()}${withSymbol("/pipeline/stream", symbol)}`;
+	const es = new EventSource(url);
+
+	es.addEventListener("node", (event) => {
+		try {
+			handlers.onNode(JSON.parse((event as MessageEvent).data));
+		} catch (err) {
+			handlers.onError?.(err);
+		}
+	});
+
+	es.addEventListener("done", () => {
+		es.close();
+		handlers.onDone?.();
+	});
+
+	es.onerror = (err) => {
+		es.close();
+		handlers.onError?.(err);
+	};
+
+	return es;
 }
 
 export function buildDryRunPreview(decision: PocDecision): DryRunPreview {

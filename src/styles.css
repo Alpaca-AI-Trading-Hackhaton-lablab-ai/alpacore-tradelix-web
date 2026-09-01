@@ -26,6 +26,16 @@
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
+	/* Acento estilo Binance Futures */
+	--color-long: var(--long);
+	--color-short: var(--short);
+	--color-gold: var(--gold);
+	--color-node-idle: var(--node-idle);
+	--color-node-running: var(--node-running);
+	--color-node-done: var(--node-done);
+	--color-node-error: var(--node-error);
+	--font-mono:
+		ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", monospace;
 }
 
 :root {
@@ -48,27 +58,42 @@
 	--border: oklch(0.923 0.003 48.717);
 	--input: oklch(0.923 0.003 48.717);
 	--ring: oklch(0.709 0.01 56.259);
+	--long: #0ecb81;
+	--short: #f6465d;
+	--gold: #f0b90b;
+	--node-idle: #9ca3af;
+	--node-running: #f0b90b;
+	--node-done: #0ecb81;
+	--node-error: #f6465d;
 }
 
 .dark {
-	--background: oklch(0.147 0.004 49.25);
-	--foreground: oklch(0.985 0.001 106.423);
-	--card: oklch(0.216 0.006 56.043);
-	--card-foreground: oklch(0.985 0.001 106.423);
-	--popover: oklch(0.216 0.006 56.043);
-	--popover-foreground: oklch(0.985 0.001 106.423);
-	--primary: oklch(0.923 0.003 48.717);
-	--primary-foreground: oklch(0.216 0.006 56.043);
-	--secondary: oklch(0.268 0.007 34.298);
-	--secondary-foreground: oklch(0.985 0.001 106.423);
-	--muted: oklch(0.268 0.007 34.298);
-	--muted-foreground: oklch(0.709 0.01 56.259);
-	--accent: oklch(0.268 0.007 34.298);
-	--accent-foreground: oklch(0.985 0.001 106.423);
-	--destructive: oklch(0.704 0.191 22.216);
-	--border: oklch(1 0 0 / 10%);
-	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.553 0.013 58.071);
+	/* Paleta Binance Futures: fondo casi-negro, panel #181a20, acento dorado */
+	--background: #0b0e11;
+	--foreground: #eaecef;
+	--card: #181a20;
+	--card-foreground: #eaecef;
+	--popover: #181a20;
+	--popover-foreground: #eaecef;
+	--primary: #f0b90b;
+	--primary-foreground: #0b0e11;
+	--secondary: #2b3139;
+	--secondary-foreground: #eaecef;
+	--muted: #21262d;
+	--muted-foreground: #848e9c;
+	--accent: #2b3139;
+	--accent-foreground: #eaecef;
+	--destructive: #f6465d;
+	--border: #2b3139;
+	--input: #2b3139;
+	--ring: #474d57;
+	--long: #0ecb81;
+	--short: #f6465d;
+	--gold: #f0b90b;
+	--node-idle: #5e6673;
+	--node-running: #f0b90b;
+	--node-done: #0ecb81;
+	--node-error: #f6465d;
 }
 
 * {
@@ -88,4 +113,31 @@ body {
 h1,
 .font-serif {
 	font-family: Fraunces, Georgia, serif;
+}
+
+/* Flujo de datos por las aristas del grafo de agentes */
+@keyframes edge-flow {
+	to {
+		stroke-dashoffset: -16;
+	}
+}
+
+.edge-flow {
+	stroke-dasharray: 4 6;
+	animation: edge-flow 0.6s linear infinite;
+}
+
+/* Latido del nodo en ejecución */
+@keyframes node-glow {
+	0%,
+	100% {
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--gold) 55%, transparent);
+	}
+	50% {
+		box-shadow: 0 0 0 4px color-mix(in srgb, var(--gold) 0%, transparent);
+	}
+}
+
+.node-running {
+	animation: node-glow 1.1s ease-in-out infinite;
 }

@@ -32,6 +32,7 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { env } from "@/env";
+import { AgentGraph } from "./AgentGraph";
 import { PriceChart } from "./PriceChart";
 
 const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
@@ -184,6 +185,29 @@ export function TradingDashboard() {
 			className="dark min-h-screen bg-background text-foreground"
 			data-testid="tradelix-dashboard"
 		>
+			<div className="border-b border-border bg-card/60 backdrop-blur">
+				<div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-6 py-2">
+					<span className="font-serif text-base text-foreground">{symbol}</span>
+					<span className="font-mono text-lg tabular-nums text-foreground">
+						{formatMoney(market?.price ?? quote?.price)}
+					</span>
+					<TickerStat
+						label="Equity"
+						value={formatMoney(toNumber(account?.equity))}
+					/>
+					<TickerStat
+						label="Buying power"
+						value={formatMoney(toNumber(account?.buying_power))}
+					/>
+					<Badge
+						variant={account?.mode === "paper" ? "success" : "warning"}
+						className="ml-auto uppercase"
+					>
+						{account?.mode ?? "—"}
+					</Badge>
+				</div>
+			</div>
+
 			<header className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4 px-6 pt-8 pb-5">
 				<div>
 					<Badge variant="success">{env.VITE_APP_TITLE}</Badge>
@@ -243,6 +267,8 @@ export function TradingDashboard() {
 					</Card>
 				) : null}
 
+				<AgentGraph symbol={symbol} orderResult={orderResult} />
+
 				<Card className="lg:col-span-2">
 					<CardHeader className="flex flex-row items-center justify-between">
 						<CardTitle>Price</CardTitle>
@@ -263,7 +289,7 @@ export function TradingDashboard() {
 						<CardTitle>Market State</CardTitle>
 					</CardHeader>
 					<CardContent>
-						<p className="text-3xl font-medium text-emerald-200">
+						<p className="text-3xl font-medium text-long">
 							{market?.trend ?? "—"}
 						</p>
 						<dl className="mt-6 space-y-2 text-sm text-muted-foreground">
@@ -297,7 +323,7 @@ export function TradingDashboard() {
 				<Card>
 					<CardHeader>
 						<CardTitle className="flex items-center gap-2">
-							<ShieldCheck className="size-5 text-amber-300" />
+							<ShieldCheck className="size-5 text-gold" />
 							Risk
 						</CardTitle>
 					</CardHeader>
@@ -419,7 +445,7 @@ export function TradingDashboard() {
 							/>
 						</div>
 						{orderResult?.mode === "demo" ? (
-							<p className="mt-4 text-xs text-amber-300">
+							<p className="mt-4 text-xs text-gold">
 								Demo mode: sin credenciales Alpaca paper; nada se envió al
 								broker.
 							</p>
@@ -523,11 +549,22 @@ export function TradingDashboard() {
 	);
 }
 
+function TickerStat({ label, value }: { label: string; value: string }) {
+	return (
+		<span className="flex items-baseline gap-1.5 text-sm">
+			<span className="text-xs text-muted-foreground">{label}</span>
+			<span className="font-mono tabular-nums text-foreground">{value}</span>
+		</span>
+	);
+}
+
 function Row({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="flex justify-between gap-4">
 			<dt>{label}</dt>
-			<dd className="text-right text-foreground">{value}</dd>
+			<dd className="text-right font-mono tabular-nums text-foreground">
+				{value}
+			</dd>
 		</div>
 	);
 }
@@ -554,11 +591,7 @@ function Step({
 }) {
 	const state = ok ? "OK" : pending ? "PENDING" : "NO";
 	const mark = ok ? "✓" : pending ? "…" : "✕";
-	const color = ok
-		? "text-emerald-300"
-		: pending
-			? "text-amber-300"
-			: "text-rose-300";
+	const color = ok ? "text-long" : pending ? "text-gold" : "text-short";
 	return (
 		<div className="rounded-lg border border-border/60 bg-black/20 p-4">
 			<div className="text-xs text-muted-foreground">{label}</div>
@@ -586,15 +619,14 @@ function classifyStatus(status: string | undefined): string {
 
 function orderStatusClass(status: string | undefined): string {
 	const base = "text-sm font-semibold";
-	if (status === "FILLED") return `${base} text-emerald-300`;
-	if (status === "REJECTED" || status === "FAILED")
-		return `${base} text-rose-300`;
+	if (status === "FILLED") return `${base} text-long`;
+	if (status === "REJECTED" || status === "FAILED") return `${base} text-short`;
 	if (
 		status === "SUBMITTED" ||
 		status === "ACCEPTED" ||
 		status === "PARTIALLY_FILLED"
 	)
-		return `${base} text-amber-300`;
+		return `${base} text-gold`;
 	return `${base} text-muted-foreground`;
 }
 
@@ -623,24 +655,24 @@ function formatNumber(value: number | undefined, digits: number): string {
 
 function actionClass(action: string | undefined): string {
 	const base = "mt-3 text-3xl font-semibold";
-	if (action === "BUY") return `${base} text-emerald-300`;
-	if (action === "SELL") return `${base} text-rose-300`;
-	if (action === "HOLD") return `${base} text-amber-300`;
+	if (action === "BUY") return `${base} text-long`;
+	if (action === "SELL") return `${base} text-short`;
+	if (action === "HOLD") return `${base} text-gold`;
 	return `${base} text-muted-foreground`;
 }
 
 function riskClass(riskLevel: string | undefined): string {
 	const base = "text-3xl font-semibold";
-	if (riskLevel === "LOW") return `${base} text-emerald-300`;
-	if (riskLevel === "MEDIUM") return `${base} text-amber-300`;
-	if (riskLevel === "HIGH") return `${base} text-rose-300`;
+	if (riskLevel === "LOW") return `${base} text-long`;
+	if (riskLevel === "MEDIUM") return `${base} text-gold`;
+	if (riskLevel === "HIGH") return `${base} text-short`;
 	return `${base} text-muted-foreground`;
 }
 
 function statusClass(status: string | undefined): string {
 	const base = "text-3xl font-semibold";
-	if (status === "BULLISH") return `${base} text-emerald-300`;
-	if (status === "BEARISH") return `${base} text-rose-300`;
-	if (status === "NEUTRAL") return `${base} text-amber-300`;
+	if (status === "BULLISH") return `${base} text-long`;
+	if (status === "BEARISH") return `${base} text-short`;
+	if (status === "NEUTRAL") return `${base} text-gold`;
 	return `${base} text-muted-foreground`;
 }
