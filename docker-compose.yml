@@ -1,0 +1,6 @@
+services:
+  tradelix-poc-web:
+    build:
+      context: .
+    ports:
+      - "3200:80"
