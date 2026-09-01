@@ -33,6 +33,39 @@ export type PocDecision = {
 	error?: string;
 };
 
+export type PocGateCheck = {
+	name: string;
+	ok: boolean;
+	detail: string;
+	hard?: boolean;
+};
+
+export type PocGate = {
+	verdict: "ALLOW" | "BLOCK" | "NO_TRADE" | string;
+	action?: string;
+	symbol?: string;
+	notional?: number;
+	checks: PocGateCheck[];
+	reasons: string[];
+};
+
+export type PocControl = {
+	armed: boolean;
+	kill: boolean;
+	execute_enabled_default: boolean;
+};
+
+export type PocAuditEntry = {
+	ts: string;
+	symbol?: string | null;
+	action?: string | null;
+	verdict?: string | null;
+	status?: string | null;
+	notional?: number | null;
+	order_id?: string | null;
+	reasons?: string[] | null;
+};
+
 export type PocAccount = {
 	equity?: string | number;
 	cash?: string | number;
@@ -56,6 +89,8 @@ export type PocOrderResult = {
 		| "REJECTED"
 		| "SUBMITTED"
 		| "NO_TRADE"
+		| "BLOCKED"
+		| "DRY_RUN"
 		| "FAILED"
 		| string;
 	order_id?: string;
@@ -66,6 +101,7 @@ export type PocOrderResult = {
 	reason?: string | null;
 	mode?: string;
 	decision?: PocDecision;
+	gate?: PocGate;
 	error?: string;
 };
 
@@ -107,6 +143,7 @@ export type PocPipeline = {
 	account?: PocAccount;
 	risk?: PocRisk;
 	decision?: PocDecision;
+	gate?: PocGate;
 };
 
 export type DryRunPreview = {
@@ -176,6 +213,24 @@ export async function fetchPositions(): Promise<PocPositions> {
 
 export async function fetchPipeline(symbol: string): Promise<PocPipeline> {
 	return getJson<PocPipeline>(withSymbol("/pipeline", symbol));
+}
+
+export async function fetchControl(): Promise<PocControl> {
+	return getJson<PocControl>("/control");
+}
+
+export async function setArmed(enabled: boolean): Promise<PocControl> {
+	return postJson<PocControl>(`/control/arm?enabled=${enabled}`);
+}
+
+export async function setKill(enabled: boolean): Promise<PocControl> {
+	return postJson<PocControl>(`/control/kill?enabled=${enabled}`);
+}
+
+export async function fetchAudit(
+	limit = 20,
+): Promise<{ entries: PocAuditEntry[] }> {
+	return getJson<{ entries: PocAuditEntry[] }>(`/audit?limit=${limit}`);
 }
 
 export type StreamHandlers = {

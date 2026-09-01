@@ -1,24 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	PlayCircle,
+	Power,
 	RefreshCw,
 	Rocket,
+	ShieldAlert,
 	ShieldCheck,
 	WalletCards,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import {
 	buildDryRunPreview,
 	executeOrder,
 	fetchAccount,
+	fetchControl,
 	fetchDecision,
 	fetchMarketState,
 	fetchOrderStatus,
+	fetchPipeline,
 	fetchPositions,
 	fetchRisk,
 	fetchSpyQuote,
+	type PocGate,
 	type PocOrderResult,
+	setArmed,
+	setKill,
 } from "@/api/market-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +57,7 @@ export function TradingDashboard() {
 			action: string;
 			status: string;
 			size: number;
+			verdict?: string;
 		}>
 	>([]);
 
@@ -59,6 +67,7 @@ export function TradingDashboard() {
 		action: string;
 		status: string;
 		size: number;
+		verdict?: string;
 	}) =>
 		setDecisionLog((items) =>
 			[
@@ -97,6 +106,27 @@ export function TradingDashboard() {
 		queryFn: fetchPositions,
 		refetchInterval: 30_000,
 	});
+	const controlQuery = useQuery({
+		queryKey: ["control"],
+		queryFn: fetchControl,
+		refetchInterval: 30_000,
+	});
+	// Seeded live by AgentGraph's stream (["gate", symbol]); disabled so it only
+	// reads the cache and reacts, never triggering an extra pipeline run.
+	const gateQuery = useQuery({
+		queryKey: ["gate", symbol],
+		queryFn: () => fetchPipeline(symbol).then((p) => p.gate),
+		enabled: false,
+	});
+
+	const arm = useMutation({
+		mutationFn: (enabled: boolean) => setArmed(enabled),
+		onSuccess: (state) => queryClient.setQueryData(["control"], state),
+	});
+	const kill = useMutation({
+		mutationFn: (enabled: boolean) => setKill(enabled),
+		onSuccess: (state) => queryClient.setQueryData(["control"], state),
+	});
 
 	const refresh = useMutation({
 		mutationFn: async () => {
@@ -129,6 +159,7 @@ export function TradingDashboard() {
 				action: result.decision?.action ?? "—",
 				status: result.status,
 				size: result.notional ?? result.decision?.position_size ?? 0,
+				...(result.gate?.verdict ? { verdict: result.gate.verdict } : {}),
 			});
 			// Re-read positions/account and, if still pending, reconcile by polling.
 			await queryClient.invalidateQueries({ queryKey: ["positions"] });
@@ -162,10 +193,8 @@ export function TradingDashboard() {
 	const account = accountQuery.data;
 	const quote = quoteQuery.data;
 	const positions = positionsQuery.data?.positions ?? [];
-	const dryRunPreview = useMemo(
-		() => (decision ? buildDryRunPreview(decision) : null),
-		[decision],
-	);
+	const control = controlQuery.data;
+	const gate: PocGate | undefined = orderResult?.gate ?? gateQuery.data;
 	const isLoading =
 		marketQuery.isLoading ||
 		riskQuery.isLoading ||
@@ -199,12 +228,42 @@ export function TradingDashboard() {
 						label="Buying power"
 						value={formatMoney(toNumber(account?.buying_power))}
 					/>
-					<Badge
-						variant={account?.mode === "paper" ? "success" : "warning"}
-						className="ml-auto uppercase"
-					>
-						{account?.mode ?? "—"}
-					</Badge>
+					<div className="ml-auto flex items-center gap-2">
+						<Badge
+							variant={account?.mode === "paper" ? "success" : "warning"}
+							className="uppercase"
+						>
+							{account?.mode ?? "—"}
+						</Badge>
+						<button
+							type="button"
+							onClick={() => arm.mutate(!control?.armed)}
+							disabled={arm.isPending || control?.kill}
+							className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold uppercase transition ${
+								control?.armed
+									? "bg-long text-background"
+									: "border border-border text-muted-foreground hover:text-foreground"
+							} disabled:opacity-50`}
+							title="Arm to allow real paper orders on an ALLOW verdict"
+						>
+							<ShieldAlert className="size-3.5" />
+							{control?.armed ? "Armed" : "Safe"}
+						</button>
+						<button
+							type="button"
+							onClick={() => kill.mutate(!control?.kill)}
+							disabled={kill.isPending}
+							className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold uppercase transition ${
+								control?.kill
+									? "bg-short text-white"
+									: "border border-short/60 text-short hover:bg-short/10"
+							} disabled:opacity-50`}
+							title="Kill switch: block every order at the gate"
+						>
+							<Power className="size-3.5" />
+							{control?.kill ? "Kill on" : "Kill"}
+						</button>
+					</div>
 				</div>
 			</div>
 
@@ -367,28 +426,43 @@ export function TradingDashboard() {
 								</div>
 							</div>
 						</div>
-						<div className="mt-5 grid gap-4 md:grid-cols-3">
-							<Metric label="Dry-run" value={dryRunPreview?.status ?? "—"} />
-							<Metric
-								label="Side"
-								value={dryRunPreview?.would_call?.side?.toUpperCase() ?? "—"}
-							/>
-							<Metric
-								label="Notional"
-								value={
-									dryRunPreview?.would_call
-										? formatMoney(
-												dryRunPreview.would_call.notional_position_size,
-											)
-										: "—"
-								}
-							/>
+						<div className="mt-5 flex flex-wrap items-center gap-2">
+							<span className="text-xs uppercase tracking-wide text-muted-foreground">
+								Execution gate
+							</span>
+							<span className={gateVerdictClass(gate?.verdict)}>
+								{gate?.verdict ?? "—"}
+							</span>
+							{gate?.notional ? (
+								<span className="text-xs text-muted-foreground">
+									· {formatMoney(gate.notional)} notional
+								</span>
+							) : null}
 						</div>
-						<p className="mt-4 text-sm text-muted-foreground">
-							{dryRunPreview?.would_call
-								? `Would call ${dryRunPreview.would_call.tool} · ${dryRunPreview.reason}`
-								: (dryRunPreview?.reason ?? "No decision yet")}
-						</p>
+						{gate && gate.checks.length > 0 ? (
+							<div className="mt-3 grid gap-2 sm:grid-cols-2">
+								{gate.checks.map((c) => (
+									<div
+										key={c.name}
+										className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs"
+									>
+										<span className="flex items-center gap-1.5">
+											<span className={c.ok ? "text-long" : "text-short"}>
+												{c.ok ? "✓" : "✕"}
+											</span>
+											<span className="text-foreground">{c.name}</span>
+										</span>
+										<span className="truncate text-right text-muted-foreground">
+											{c.detail}
+										</span>
+									</div>
+								))}
+							</div>
+						) : (
+							<p className="mt-3 text-sm text-muted-foreground">
+								{gate?.reasons?.[0] ?? "Run the pipeline to evaluate the gate."}
+							</p>
+						)}
 					</CardContent>
 				</Card>
 
@@ -412,7 +486,11 @@ export function TradingDashboard() {
 										? `#${orderResult.order_id.slice(0, 8)}`
 										: orderResult?.status === "NO_TRADE"
 											? "No trade (HOLD)"
-											: (orderResult?.error ?? "—")
+											: orderResult?.status === "BLOCKED"
+												? (orderResult.reason ?? "blocked by gate")
+												: orderResult?.status === "DRY_RUN"
+													? "dry-run (not armed)"
+													: (orderResult?.error ?? "—")
 								}
 							/>
 							<Step
@@ -446,6 +524,20 @@ export function TradingDashboard() {
 								}
 							/>
 						</div>
+						{orderResult?.gate ? (
+							<p className="mt-4 text-xs text-muted-foreground">
+								Gate:{" "}
+								<span className={gateVerdictClass(orderResult.gate.verdict)}>
+									{orderResult.gate.verdict}
+								</span>
+								{orderResult.gate.reasons[0]
+									? ` · ${orderResult.gate.reasons[0]}`
+									: ""}
+								{!control?.armed && orderResult.status === "DRY_RUN"
+									? " · arm the system to send"
+									: ""}
+							</p>
+						) : null}
 						{orderResult?.mode === "demo" ? (
 							<p className="mt-4 text-xs text-gold">
 								Demo mode: no Alpaca paper credentials; nothing was sent to the
@@ -510,6 +602,7 @@ export function TradingDashboard() {
 									<TableHead>Symbol</TableHead>
 									<TableHead>Action</TableHead>
 									<TableHead>Status</TableHead>
+									<TableHead>Gate</TableHead>
 									<TableHead>Size</TableHead>
 								</TableRow>
 							</TableHeader>
@@ -523,13 +616,14 @@ export function TradingDashboard() {
 										<TableCell>{entry.symbol}</TableCell>
 										<TableCell>{entry.action}</TableCell>
 										<TableCell>{entry.status}</TableCell>
+										<TableCell>{entry.verdict ?? "—"}</TableCell>
 										<TableCell>{formatMoney(entry.size)}</TableCell>
 									</TableRow>
 								))}
 								{decisionLog.length === 0 && (
 									<TableRow>
 										<TableCell
-											colSpan={6}
+											colSpan={7}
 											className="py-4 text-muted-foreground"
 										>
 											No entries yet.
@@ -567,15 +661,6 @@ function Row({ label, value }: { label: string; value: string }) {
 			<dd className="text-right font-mono tabular-nums text-foreground">
 				{value}
 			</dd>
-		</div>
-	);
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-	return (
-		<div>
-			<div className="text-xs text-muted-foreground">{label}</div>
-			<div className="mt-1 text-base text-foreground">{value}</div>
 		</div>
 	);
 }
@@ -622,13 +707,22 @@ function classifyStatus(status: string | undefined): string {
 function orderStatusClass(status: string | undefined): string {
 	const base = "text-sm font-semibold";
 	if (status === "FILLED") return `${base} text-long`;
-	if (status === "REJECTED" || status === "FAILED") return `${base} text-short`;
+	if (status === "REJECTED" || status === "FAILED" || status === "BLOCKED")
+		return `${base} text-short`;
 	if (
 		status === "SUBMITTED" ||
 		status === "ACCEPTED" ||
-		status === "PARTIALLY_FILLED"
+		status === "PARTIALLY_FILLED" ||
+		status === "DRY_RUN"
 	)
 		return `${base} text-gold`;
+	return `${base} text-muted-foreground`;
+}
+
+function gateVerdictClass(verdict: string | undefined): string {
+	const base = "text-sm font-bold uppercase";
+	if (verdict === "ALLOW") return `${base} text-long`;
+	if (verdict === "BLOCK") return `${base} text-short`;
 	return `${base} text-muted-foreground`;
 }
 

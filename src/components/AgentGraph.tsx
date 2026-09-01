@@ -9,6 +9,7 @@ import {
 	Newspaper,
 	Play,
 	Rocket,
+	ShieldAlert,
 	ShieldCheck,
 	Square,
 	Wallet,
@@ -53,7 +54,8 @@ const NODES: NodeDef[] = [
 	{ id: "risk", label: "Risk", icon: ShieldCheck, col: 2, row: 3 },
 	{ id: "market_state", label: "Market State", icon: Gauge, col: 3, row: 1 },
 	{ id: "decision", label: "Decision", icon: Gavel, col: 4, row: 2 },
-	{ id: "execution", label: "Execution", icon: Rocket, col: 5, row: 2 },
+	{ id: "gate", label: "Gate", icon: ShieldAlert, col: 5, row: 2 },
+	{ id: "execution", label: "Execution", icon: Rocket, col: 6, row: 2 },
 ];
 
 const EDGES: [string, string][] = [
@@ -67,7 +69,8 @@ const EDGES: [string, string][] = [
 	["technical", "market_state"],
 	["market_state", "decision"],
 	["risk", "decision"],
-	["decision", "execution"],
+	["decision", "gate"],
+	["gate", "execution"],
 ];
 
 // Canvas geometry.
@@ -76,7 +79,7 @@ const H = 66;
 const HGAP = 46;
 const VGAP = 30;
 const PAD = 14;
-const CANVAS_W = PAD * 2 + 6 * W + 5 * HGAP;
+const CANVAS_W = PAD * 2 + 7 * W + 6 * HGAP;
 const CANVAS_H = PAD * 2 + 4 * H + 3 * VGAP;
 
 function pos(node: NodeDef) {
@@ -104,6 +107,11 @@ function orderToStatus(order?: PocOrderResult | null): NodeState {
 		return { status: "error", message: order.reason ?? order.error ?? s };
 	}
 	if (s === "NO_TRADE") return { status: "idle", message: "No trade (HOLD)" };
+	if (s === "BLOCKED") {
+		return { status: "error", message: order.reason ?? "Blocked by gate" };
+	}
+	if (s === "DRY_RUN")
+		return { status: "done", message: "Dry-run (not armed)" };
 	if (["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(s)) {
 		return { status: "running", message: s };
 	}
@@ -118,6 +126,7 @@ const CACHE_KEY: Record<string, (symbol: string) => unknown[]> = {
 	market_state: (s) => ["market", s],
 	risk: (s) => ["risk", s],
 	decision: (s) => ["decision", s],
+	gate: (s) => ["gate", s],
 	account: () => ["account"],
 };
 
