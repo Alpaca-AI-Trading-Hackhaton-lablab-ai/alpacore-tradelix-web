@@ -23,9 +23,7 @@ import {
 	useState,
 } from "react";
 import {
-	INDICATOR_OPTIONS,
 	type PipelineOpts,
-	type PocGroqModel,
 	type PocNodeStatus,
 	type PocOrderResult,
 	type PocPipelineNode,
@@ -91,7 +89,7 @@ const NODE_META: Record<
 	sentiment: {
 		kind: "llm",
 		role: "LLM",
-		blurb: "News → sentiment. Model + optional ReAct research loop.",
+		blurb: "News → sentiment. Model + optional ReAct (news + concept lookup).",
 	},
 	options: {
 		kind: "locked",
@@ -126,7 +124,7 @@ const NODE_META: Record<
 	decision: {
 		kind: "llm",
 		role: "LLM",
-		blurb: "Interprets the indicator snapshot. Does not size the order.",
+		blurb: "Interprets the snapshot. Deep mode may look up unknown concepts.",
 	},
 	gate: {
 		kind: "locked",
@@ -204,22 +202,14 @@ export type AgentSettings = {
 	decisionIndicators: string[];
 };
 
-function toggleId(list: string[], id: string): string[] {
-	return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
-}
-
 export function AgentGraph({
 	symbol,
 	orderResult,
-	allowlist,
 	settings,
-	onSettings,
 }: {
 	symbol: string;
 	orderResult?: PocOrderResult | null;
-	allowlist: PocGroqModel[];
 	settings: AgentSettings;
-	onSettings: (next: AgentSettings) => void;
 }) {
 	const queryClient = useQueryClient();
 	const [states, setStates] =
@@ -303,9 +293,13 @@ export function AgentGraph({
 
 	const deepOn = settings.deepSentiment || settings.deepDecision;
 	const meta = selected ? NODE_META[selected] : null;
+	const stSelected = selected ? stateOf(selected) : null;
+	const nodeReact = selected
+		? reactLog.filter((turn) => turn.node === selected)
+		: [];
 
 	return (
-		<Card className="lg:col-span-3">
+		<Card>
 			<CardContent className="pt-5">
 				<div className="mb-4 flex flex-wrap items-center justify-between gap-3">
 					<div>
@@ -319,24 +313,6 @@ export function AgentGraph({
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
 						<Legend />
-						<button
-							type="button"
-							onClick={() =>
-								onSettings({
-									...settings,
-									deepSentiment: !deepOn,
-									deepDecision: !deepOn,
-								})
-							}
-							className={`inline-flex h-9 items-center rounded-md px-3 text-xs font-semibold uppercase transition ${
-								deepOn
-									? "bg-gold text-background"
-									: "border border-border text-muted-foreground hover:text-foreground"
-							}`}
-							title="Opt-in ReAct on sentiment and decision"
-						>
-							Deep research
-						</button>
 						<button
 							type="button"
 							onClick={running ? stop : runManual}
@@ -469,64 +445,46 @@ export function AgentGraph({
 								</button>
 							</div>
 							<p className="mb-4 text-xs text-muted-foreground">{meta.blurb}</p>
-							{meta.kind === "llm" && selected === "sentiment" ? (
-								<LlmControls
-									allowlist={allowlist}
-									model={settings.sentimentModel}
-									deep={settings.deepSentiment}
-									onModel={(id) =>
-										onSettings({ ...settings, sentimentModel: id })
-									}
-									onDeep={(v) => onSettings({ ...settings, deepSentiment: v })}
-								/>
-							) : null}
-							{meta.kind === "llm" && selected === "decision" ? (
-								<>
-									<LlmControls
-										allowlist={allowlist}
-										model={settings.decisionModel}
-										deep={settings.deepDecision}
-										onModel={(id) =>
-											onSettings({ ...settings, decisionModel: id })
-										}
-										onDeep={(v) => onSettings({ ...settings, deepDecision: v })}
-									/>
-									<IndicatorToggles
-										label="Snapshot for the decision prompt"
-										selected={settings.decisionIndicators}
-										onToggle={(id) =>
-											onSettings({
-												...settings,
-												decisionIndicators: toggleId(
-													settings.decisionIndicators,
-													id,
-												),
-											})
-										}
-									/>
-								</>
-							) : null}
-							{meta.kind === "indicators" ? (
-								<IndicatorToggles
-									label="Compute"
-									selected={settings.indicators}
-									onToggle={(id) =>
-										onSettings({
-											...settings,
-											indicators: toggleId(settings.indicators, id),
-										})
-									}
-								/>
+							{stSelected ? (
+								<p className="mb-3 font-mono text-xs text-foreground">
+									{stSelected.message ?? stSelected.status}
+								</p>
 							) : null}
 							{meta.kind === "locked" ? (
 								<p className="text-xs text-muted-foreground">
 									Not configurable. Architecture stays deterministic here.
 								</p>
+							) : (
+								<p className="text-xs text-muted-foreground">
+									Configure models, Deep, and indicators in Options.
+								</p>
+							)}
+							{nodeReact.length > 0 ? (
+								<div className="mt-3 max-h-32 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+									{nodeReact.map((turn) => (
+										<div key={turn.id} className="mb-1.5">
+											<span className="text-foreground">
+												#{(turn.turn ?? 0) + 1}
+											</span>
+											{turn.tool ? (
+												<span className="text-gold"> · {turn.tool}</span>
+											) : null}
+											{turn.thought ? (
+												<div className="line-clamp-2 pl-2">{turn.thought}</div>
+											) : null}
+											{turn.observation ? (
+												<div className="line-clamp-2 pl-2 text-muted-foreground/80">
+													obs: {turn.observation}
+												</div>
+											) : null}
+										</div>
+									))}
+								</div>
 							) : null}
 						</aside>
 					) : (
 						<p className="text-xs text-muted-foreground xl:w-56">
-							Click an agent to inspect model, ReAct, or indicators.
+							Click an agent to inspect output or ReAct.
 						</p>
 					)}
 				</div>
@@ -557,81 +515,6 @@ export function AgentGraph({
 				) : null}
 			</CardContent>
 		</Card>
-	);
-}
-
-function LlmControls({
-	allowlist,
-	model,
-	deep,
-	onModel,
-	onDeep,
-}: {
-	allowlist: PocGroqModel[];
-	model: string;
-	deep: boolean;
-	onModel: (id: string) => void;
-	onDeep: (v: boolean) => void;
-}) {
-	return (
-		<div className="space-y-3">
-			<label className="block text-[10px] uppercase tracking-wide text-muted-foreground">
-				Model
-				<select
-					value={model}
-					onChange={(event) => onModel(event.target.value)}
-					className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-xs normal-case text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-				>
-					{allowlist.length === 0 ? <option value="">Loading…</option> : null}
-					{allowlist.map((item) => (
-						<option key={item.id} value={item.id}>
-							{item.label}
-						</option>
-					))}
-				</select>
-			</label>
-			<label className="flex items-center gap-2 text-xs text-foreground">
-				<input
-					type="checkbox"
-					checked={deep}
-					onChange={(event) => onDeep(event.target.checked)}
-				/>
-				ReAct loop (deep)
-			</label>
-		</div>
-	);
-}
-
-function IndicatorToggles({
-	label,
-	selected,
-	onToggle,
-}: {
-	label: string;
-	selected: string[];
-	onToggle: (id: string) => void;
-}) {
-	return (
-		<div className="mt-3">
-			<p className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-				{label}
-			</p>
-			<div className="grid grid-cols-2 gap-1.5">
-				{INDICATOR_OPTIONS.map((item) => (
-					<label
-						key={item.id}
-						className="flex items-center gap-1.5 text-xs text-foreground"
-					>
-						<input
-							type="checkbox"
-							checked={selected.includes(item.id)}
-							onChange={() => onToggle(item.id)}
-						/>
-						{item.label}
-					</label>
-				))}
-			</div>
-		</div>
 	);
 }
 

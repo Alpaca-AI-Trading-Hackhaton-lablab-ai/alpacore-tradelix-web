@@ -2,7 +2,8 @@
 
 ## Next
 
-- [ ] Wire the chart to real bars if the backend exposes an OHLCV series.
+- [x] Redistribute the dashboard into the Progressive Disclosure Cockpit (`docs/to-do-better-ui.md`).
+- [x] Wire the chart to real bars (`GET /bars`).
 - [ ] Replace the local Decision Log with backend audit when that exists.
 - [x] Deep research toggle + Groq model per agent (sentiment / decision) via `/models`.
 - [x] ReAct log (thought / tool / observation) from SSE `event: react`.
