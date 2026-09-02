@@ -6,8 +6,8 @@ async function backendsReady(request: {
 	try {
 		const checks = await Promise.all([
 			request.get("/api/"),
-			request.get("/api/market-state"),
-			request.get("/api/decision"),
+			request.get("/api/bars?symbol=SPY"),
+			request.get("/api/models"),
 		]);
 		return checks.every((response) => response.ok());
 	} catch {
@@ -25,6 +25,10 @@ test("records a dry-run preview against the Python PoC", async ({
 	);
 
 	await page.goto("/", { waitUntil: "networkidle" });
+	await page.getByRole("button", { name: /Run pipeline/i }).click();
+	await expect(page.getByRole("button", { name: /Dry-run/i })).toBeEnabled({
+		timeout: 60_000,
+	});
 	await page.getByRole("button", { name: /Dry-run/i }).click();
 
 	await expect(

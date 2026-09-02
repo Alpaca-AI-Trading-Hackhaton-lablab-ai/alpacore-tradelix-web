@@ -1,24 +1,40 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+	KeyRound,
 	PlayCircle,
+	Power,
 	RefreshCw,
 	Rocket,
+	ScrollText,
+	ShieldAlert,
 	ShieldCheck,
 	WalletCards,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
 	buildDryRunPreview,
 	executeOrder,
 	fetchAccount,
-	fetchDecision,
-	fetchMarketState,
+	fetchBars,
+	fetchControl,
+	fetchLogs,
+	fetchModels,
 	fetchOrderStatus,
 	fetchPositions,
-	fetchRisk,
+	fetchSettings,
 	fetchSpyQuote,
+	INDICATOR_OPTIONS,
+	type PipelineOpts,
+	type PocDecision,
+	type PocGate,
+	type PocMarketState,
 	type PocOrderResult,
+	type PocRisk,
+	type PocSettings,
+	saveSettings,
+	setArmed,
+	setKill,
 } from "@/api/market-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,14 +48,89 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { env } from "@/env";
+import { AgentGraph, type AgentSettings } from "./AgentGraph";
 import { PriceChart } from "./PriceChart";
 
 const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
+const ALL_INDICATORS = INDICATOR_OPTIONS.map((item) => item.id);
+
+const EMPTY_SETTINGS: AgentSettings = {
+	sentimentModel: "",
+	decisionModel: "",
+	deepSentiment: false,
+	deepDecision: false,
+	indicators: [...ALL_INDICATORS],
+	decisionIndicators: [...ALL_INDICATORS],
+};
+
+function agentsToSettings(
+	agents: PocSettings["agents"],
+	fallback: AgentSettings,
+): AgentSettings {
+	return {
+		sentimentModel: agents.sentiment.model || fallback.sentimentModel,
+		decisionModel: agents.decision.model || fallback.decisionModel,
+		deepSentiment: Boolean(agents.sentiment.deep),
+		deepDecision: Boolean(agents.decision.deep),
+		indicators: agents.technical.indicators?.length
+			? [...agents.technical.indicators]
+			: fallback.indicators,
+		decisionIndicators: agents.decision.indicators?.length
+			? [...agents.decision.indicators]
+			: fallback.decisionIndicators,
+	};
+}
+
+function settingsToAgents(settings: AgentSettings) {
+	return {
+		sentiment: {
+			model: settings.sentimentModel,
+			deep: settings.deepSentiment,
+		},
+		decision: {
+			model: settings.decisionModel,
+			deep: settings.deepDecision,
+			indicators: settings.decisionIndicators,
+		},
+		technical: { indicators: settings.indicators },
+		features: { indicators: settings.indicators },
+	};
+}
+
+function sourceBadge(source: string | undefined) {
+	if (source === "db") return "success" as const;
+	if (source === "env") return "warning" as const;
+	return "outline" as const;
+}
+
+function settingsToOpts(settings: AgentSettings): PipelineOpts {
+	const opts: PipelineOpts = {
+		deepSentiment: settings.deepSentiment,
+		deepDecision: settings.deepDecision,
+	};
+	if (settings.deepSentiment || settings.deepDecision) opts.deep = true;
+	if (settings.sentimentModel) opts.sentimentModel = settings.sentimentModel;
+	if (settings.decisionModel) opts.decisionModel = settings.decisionModel;
+	if (settings.indicators.length)
+		opts.indicators = settings.indicators.join(",");
+	if (settings.decisionIndicators.length)
+		opts.decisionIndicators = settings.decisionIndicators.join(",");
+	return opts;
+}
 
 export function TradingDashboard() {
 	const [symbol, setSymbol] = useState(env.VITE_DEFAULT_SYMBOL.toUpperCase());
 	const queryClient = useQueryClient();
 	const [orderResult, setOrderResult] = useState<PocOrderResult | null>(null);
+	const [settings, setSettings] = useState<AgentSettings>(EMPTY_SETTINGS);
+	const [keyDraft, setKeyDraft] = useState({
+		groq: "",
+		tavily: "",
+		alpaca_api_key: "",
+		alpaca_secret_key: "",
+	});
+	const hydrated = useRef(false);
+	const skipPersist = useRef(true);
 	const [decisionLog, setDecisionLog] = useState<
 		Array<{
 			id: string;
@@ -49,6 +140,7 @@ export function TradingDashboard() {
 			action: string;
 			status: string;
 			size: number;
+			verdict?: string;
 		}>
 	>([]);
 
@@ -58,6 +150,7 @@ export function TradingDashboard() {
 		action: string;
 		status: string;
 		size: number;
+		verdict?: string;
 	}) =>
 		setDecisionLog((items) =>
 			[
@@ -66,20 +159,26 @@ export function TradingDashboard() {
 			].slice(0, 10),
 		);
 
-	const marketQuery = useQuery({
+	const marketQuery = useQuery<PocMarketState>({
 		queryKey: ["market", symbol],
-		queryFn: () => fetchMarketState(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
-	const riskQuery = useQuery({
+	const riskQuery = useQuery<PocRisk>({
 		queryKey: ["risk", symbol],
-		queryFn: () => fetchRisk(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
-	const decisionQuery = useQuery({
+	const decisionQuery = useQuery<PocDecision>({
 		queryKey: ["decision", symbol],
-		queryFn: () => fetchDecision(symbol),
-		refetchInterval: 30_000,
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
 	});
 	const accountQuery = useQuery({
 		queryKey: ["account"],
@@ -96,15 +195,130 @@ export function TradingDashboard() {
 		queryFn: fetchPositions,
 		refetchInterval: 30_000,
 	});
+	const controlQuery = useQuery({
+		queryKey: ["control"],
+		queryFn: fetchControl,
+		refetchInterval: 30_000,
+	});
+	const modelsQuery = useQuery({
+		queryKey: ["models"],
+		queryFn: fetchModels,
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+	const storedQuery = useQuery({
+		queryKey: ["settings"],
+		queryFn: fetchSettings,
+	});
+	const logsQuery = useQuery({
+		queryKey: ["logs", symbol],
+		queryFn: () => fetchLogs({ symbol, limit: 40 }),
+		refetchInterval: 10_000,
+	});
+	const catalog = modelsQuery.data;
+	const mergedSettings: AgentSettings = {
+		...settings,
+		sentimentModel:
+			settings.sentimentModel || catalog?.defaults.sentiment || "",
+		decisionModel: settings.decisionModel || catalog?.defaults.decision || "",
+	};
+	const pipelineOpts = settingsToOpts(mergedSettings);
+	const barsQuery = useQuery({
+		queryKey: ["bars", symbol, mergedSettings.indicators.join(",")],
+		queryFn: () =>
+			fetchBars(symbol, mergedSettings.indicators.join(",") || undefined),
+		refetchInterval: 60_000,
+	});
+	const gateQuery = useQuery<PocGate>({
+		queryKey: ["gate", symbol],
+		queryFn: async () => {
+			throw new Error("seeded by pipeline");
+		},
+		enabled: false,
+	});
+
+	useEffect(() => {
+		if (!storedQuery.data) return;
+		skipPersist.current = true;
+		hydrated.current = true;
+		setSettings((prev) => agentsToSettings(storedQuery.data.agents, prev));
+	}, [storedQuery.data]);
+
+	useEffect(() => {
+		if (!hydrated.current) return;
+		if (skipPersist.current) {
+			skipPersist.current = false;
+			return;
+		}
+		const toSave: AgentSettings = {
+			...settings,
+			sentimentModel:
+				settings.sentimentModel || catalog?.defaults.sentiment || "",
+			decisionModel: settings.decisionModel || catalog?.defaults.decision || "",
+		};
+		const handle = window.setTimeout(() => {
+			void saveSettings({ agents: settingsToAgents(toSave) }).then((view) =>
+				queryClient.setQueryData(["settings"], view),
+			);
+		}, 500);
+		return () => window.clearTimeout(handle);
+	}, [
+		settings,
+		catalog?.defaults.sentiment,
+		catalog?.defaults.decision,
+		queryClient,
+	]);
+
+	const arm = useMutation({
+		mutationFn: (enabled: boolean) => setArmed(enabled),
+		onSuccess: (state) => queryClient.setQueryData(["control"], state),
+	});
+	const kill = useMutation({
+		mutationFn: (enabled: boolean) => setKill(enabled),
+		onSuccess: (state) => queryClient.setQueryData(["control"], state),
+	});
 
 	const refresh = useMutation({
 		mutationFn: async () => {
-			await queryClient.invalidateQueries();
+			await queryClient.invalidateQueries({ queryKey: ["account"] });
+			await queryClient.invalidateQueries({ queryKey: ["quote"] });
+			await queryClient.invalidateQueries({ queryKey: ["positions"] });
+			await queryClient.invalidateQueries({ queryKey: ["control"] });
+			await queryClient.invalidateQueries({ queryKey: ["bars"] });
+			await queryClient.invalidateQueries({ queryKey: ["logs"] });
+			await queryClient.invalidateQueries({ queryKey: ["settings"] });
+		},
+	});
+
+	const saveKeys = useMutation({
+		mutationFn: async () => {
+			const keys: Record<string, string> = {};
+			for (const [name, value] of Object.entries(keyDraft)) {
+				if (value.trim()) keys[name] = value.trim();
+			}
+			if (Object.keys(keys).length === 0) return storedQuery.data;
+			return saveSettings({ keys });
+		},
+		onSuccess: (view) => {
+			if (view) queryClient.setQueryData(["settings"], view);
+			setKeyDraft({
+				groq: "",
+				tavily: "",
+				alpaca_api_key: "",
+				alpaca_secret_key: "",
+			});
+			void queryClient.invalidateQueries({ queryKey: ["account"] });
 		},
 	});
 
 	const dryRun = useMutation({
-		mutationFn: () => fetchDecision(symbol),
+		mutationFn: async () => {
+			const cached = queryClient.getQueryData<PocDecision>([
+				"decision",
+				symbol,
+			]);
+			if (!cached) throw new Error("Run the pipeline first");
+			return cached;
+		},
 		onSuccess: (decision) => {
 			const preview = buildDryRunPreview(decision);
 			pushLog({
@@ -119,7 +333,7 @@ export function TradingDashboard() {
 	});
 
 	const execute = useMutation({
-		mutationFn: () => executeOrder(symbol),
+		mutationFn: () => executeOrder(symbol, pipelineOpts),
 		onSuccess: async (result) => {
 			setOrderResult(result);
 			pushLog({
@@ -128,10 +342,12 @@ export function TradingDashboard() {
 				action: result.decision?.action ?? "—",
 				status: result.status,
 				size: result.notional ?? result.decision?.position_size ?? 0,
+				...(result.gate?.verdict ? { verdict: result.gate.verdict } : {}),
 			});
-			// Re-lee posiciones/cuenta y, si sigue pendiente, reconcilia por poll.
+			// Re-read positions/account and, if still pending, reconcile by polling.
 			await queryClient.invalidateQueries({ queryKey: ["positions"] });
 			await queryClient.invalidateQueries({ queryKey: ["account"] });
+			await queryClient.invalidateQueries({ queryKey: ["logs"] });
 			if (
 				result.order_id &&
 				["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(result.status)
@@ -161,34 +377,75 @@ export function TradingDashboard() {
 	const account = accountQuery.data;
 	const quote = quoteQuery.data;
 	const positions = positionsQuery.data?.positions ?? [];
-	const dryRunPreview = useMemo(
-		() => (decision ? buildDryRunPreview(decision) : null),
-		[decision],
-	);
-	const isLoading =
-		marketQuery.isLoading ||
-		riskQuery.isLoading ||
-		decisionQuery.isLoading ||
-		accountQuery.isLoading ||
-		quoteQuery.isLoading;
+	const control = controlQuery.data;
+	const gate: PocGate | undefined = orderResult?.gate ?? gateQuery.data;
+	const isLoading = accountQuery.isLoading || quoteQuery.isLoading;
 	const error =
-		marketQuery.error ||
-		riskQuery.error ||
-		decisionQuery.error ||
-		accountQuery.error ||
-		quoteQuery.error ||
-		null;
+		accountQuery.error || quoteQuery.error || barsQuery.error || null;
 
 	return (
 		<div
 			className="dark min-h-screen bg-background text-foreground"
 			data-testid="tradelix-dashboard"
 		>
+			<div className="border-b border-border bg-card/60 backdrop-blur">
+				<div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-6 py-2">
+					<span className="font-serif text-base text-foreground">{symbol}</span>
+					<span className="font-mono text-lg tabular-nums text-foreground">
+						{formatMoney(market?.price ?? quote?.price)}
+					</span>
+					<TickerStat
+						label="Equity"
+						value={formatMoney(toNumber(account?.equity))}
+					/>
+					<TickerStat
+						label="Buying power"
+						value={formatMoney(toNumber(account?.buying_power))}
+					/>
+					<div className="ml-auto flex items-center gap-2">
+						<Badge
+							variant={account?.mode === "paper" ? "success" : "warning"}
+							className="uppercase"
+						>
+							{account?.mode ?? "—"}
+						</Badge>
+						<button
+							type="button"
+							onClick={() => arm.mutate(!control?.armed)}
+							disabled={arm.isPending || control?.kill}
+							className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold uppercase transition ${
+								control?.armed
+									? "bg-long text-background"
+									: "border border-border text-muted-foreground hover:text-foreground"
+							} disabled:opacity-50`}
+							title="Arm to allow real paper orders on an ALLOW verdict"
+						>
+							<ShieldAlert className="size-3.5" />
+							{control?.armed ? "Armed" : "Safe"}
+						</button>
+						<button
+							type="button"
+							onClick={() => kill.mutate(!control?.kill)}
+							disabled={kill.isPending}
+							className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold uppercase transition ${
+								control?.kill
+									? "bg-short text-white"
+									: "border border-short/60 text-short hover:bg-short/10"
+							} disabled:opacity-50`}
+							title="Kill switch: block every order at the gate"
+						>
+							<Power className="size-3.5" />
+							{control?.kill ? "Kill on" : "Kill"}
+						</button>
+					</div>
+				</div>
+			</div>
+
 			<header className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4 px-6 pt-8 pb-5">
 				<div>
 					<Badge variant="success">{env.VITE_APP_TITLE}</Badge>
 					<div className="mt-2 flex flex-wrap items-center gap-3">
-						<h1 className="font-serif text-4xl text-white">{symbol}</h1>
+						<h1 className="font-serif text-4xl text-foreground">{symbol}</h1>
 						<select
 							value={symbol}
 							onChange={(event) => setSymbol(event.target.value)}
@@ -219,6 +476,7 @@ export function TradingDashboard() {
 						type="button"
 						variant="secondary"
 						onClick={() => dryRun.mutate()}
+						disabled={!decision}
 					>
 						<PlayCircle />
 						Dry-run
@@ -237,24 +495,85 @@ export function TradingDashboard() {
 			<main className="mx-auto grid max-w-6xl gap-5 px-6 pb-12 lg:grid-cols-3">
 				{error ? (
 					<Card className="border-destructive/40 bg-destructive/10 lg:col-span-3">
-						<CardContent className="pt-5 text-sm text-rose-100">
+						<CardContent className="pt-5 text-sm text-destructive">
 							{error instanceof Error ? error.message : "API request failed"}
 						</CardContent>
 					</Card>
 				) : null}
 
+				<AgentGraph
+					key={symbol}
+					symbol={symbol}
+					orderResult={orderResult}
+					allowlist={catalog?.allowlist ?? []}
+					settings={mergedSettings}
+					onSettings={setSettings}
+				/>
+
+				<Card className="lg:col-span-3">
+					<CardHeader>
+						<CardTitle className="flex items-center gap-2">
+							<KeyRound className="size-5 text-gold" />
+							API keys
+						</CardTitle>
+					</CardHeader>
+					<CardContent className="space-y-3">
+						<p className="text-xs text-muted-foreground">
+							Saved keys override .env. Leave blank to keep the current source.
+							Values are never shown after save.
+						</p>
+						<div className="grid gap-3 sm:grid-cols-2">
+							<KeyField
+								label="Groq"
+								source={storedQuery.data?.keys.groq}
+								value={keyDraft.groq}
+								onChange={(v) => setKeyDraft((s) => ({ ...s, groq: v }))}
+							/>
+							<KeyField
+								label="Tavily"
+								source={storedQuery.data?.keys.tavily}
+								value={keyDraft.tavily}
+								onChange={(v) => setKeyDraft((s) => ({ ...s, tavily: v }))}
+							/>
+							<KeyField
+								label="Alpaca key"
+								source={storedQuery.data?.keys.alpaca_api_key}
+								value={keyDraft.alpaca_api_key}
+								onChange={(v) =>
+									setKeyDraft((s) => ({ ...s, alpaca_api_key: v }))
+								}
+							/>
+							<KeyField
+								label="Alpaca secret"
+								source={storedQuery.data?.keys.alpaca_secret_key}
+								value={keyDraft.alpaca_secret_key}
+								onChange={(v) =>
+									setKeyDraft((s) => ({ ...s, alpaca_secret_key: v }))
+								}
+							/>
+						</div>
+						<Button
+							type="button"
+							variant="secondary"
+							onClick={() => saveKeys.mutate()}
+							disabled={saveKeys.isPending}
+						>
+							{saveKeys.isPending ? "Saving…" : "Save keys"}
+						</Button>
+						{storedQuery.error ? (
+							<p className="text-xs text-short">
+								Settings API unavailable (is Postgres up?)
+							</p>
+						) : null}
+					</CardContent>
+				</Card>
+
 				<Card className="lg:col-span-2">
-					<CardHeader className="flex flex-row items-center justify-between">
+					<CardHeader>
 						<CardTitle>Price</CardTitle>
-						<span className="text-sm text-muted-foreground">
-							{formatMoney(market?.price ?? quote?.price)}
-						</span>
 					</CardHeader>
 					<CardContent>
-						<PriceChart
-							symbol={symbol}
-							lastPrice={market?.price ?? quote?.price ?? 100}
-						/>
+						<PriceChart symbol={symbol} bars={barsQuery.data} />
 					</CardContent>
 				</Card>
 
@@ -263,13 +582,15 @@ export function TradingDashboard() {
 						<CardTitle>Market State</CardTitle>
 					</CardHeader>
 					<CardContent>
-						<p className="text-3xl font-medium text-emerald-200">
+						<p className="text-3xl font-medium text-long">
 							{market?.trend ?? "—"}
 						</p>
 						<dl className="mt-6 space-y-2 text-sm text-muted-foreground">
 							<Row label="RSI" value={formatNumber(market?.rsi, 1)} />
 							<Row label="SMA 20" value={formatNumber(market?.sma20, 2)} />
 							<Row label="SMA 50" value={formatNumber(market?.sma50, 2)} />
+							<Row label="EMA 20" value={formatNumber(market?.ema20, 2)} />
+							<Row label="MACD" value={formatNumber(market?.macd, 2)} />
 							<Row label="Signal" value={market?.technical_signal ?? "—"} />
 						</dl>
 					</CardContent>
@@ -297,7 +618,7 @@ export function TradingDashboard() {
 				<Card>
 					<CardHeader>
 						<CardTitle className="flex items-center gap-2">
-							<ShieldCheck className="size-5 text-amber-300" />
+							<ShieldCheck className="size-5 text-gold" />
 							Risk
 						</CardTitle>
 					</CardHeader>
@@ -316,16 +637,12 @@ export function TradingDashboard() {
 				<Card>
 					<CardHeader>
 						<CardTitle className="flex items-center gap-2">
-							<WalletCards className="size-5 text-sky-300" />
+							<WalletCards className="size-5 text-muted-foreground" />
 							Account
 						</CardTitle>
 					</CardHeader>
 					<CardContent>
 						<dl className="space-y-2 text-sm text-muted-foreground">
-							<Row
-								label="Equity"
-								value={formatMoney(toNumber(account?.equity))}
-							/>
 							<Row label="Cash" value={formatMoney(toNumber(account?.cash))} />
 							<Row label="Status" value={account?.status ?? "—"} />
 						</dl>
@@ -346,28 +663,67 @@ export function TradingDashboard() {
 								<div className="text-foreground">
 									{formatMoney(decision?.position_size)}
 								</div>
+								{decision?.model ? (
+									<div className="mt-1 font-mono text-[11px]">
+										{decision.model.split("/").pop()}
+									</div>
+								) : null}
 							</div>
 						</div>
-						<div className="mt-5 grid gap-4 md:grid-cols-3">
-							<Metric label="Sentiment" value={decision?.sentiment ?? "—"} />
-							<Metric
-								label="Technical"
-								value={decision?.technical_signal ?? "—"}
-							/>
-							<Metric label="Dry-run" value={dryRunPreview?.status ?? "—"} />
+						{decision?.rationale ? (
+							<p className="mt-3 text-sm text-muted-foreground">
+								{decision.rationale}
+							</p>
+						) : null}
+						{decision?.confidence != null ? (
+							<p className="mt-1 text-xs text-muted-foreground">
+								Confidence {formatNumber(decision.confidence, 0)}%
+							</p>
+						) : null}
+						<div className="mt-5 flex flex-wrap items-center gap-2">
+							<span className="text-xs uppercase tracking-wide text-muted-foreground">
+								Execution gate
+							</span>
+							<span className={gateVerdictClass(gate?.verdict)}>
+								{gate?.verdict ?? "—"}
+							</span>
+							{gate?.notional ? (
+								<span className="text-xs text-muted-foreground">
+									· {formatMoney(gate.notional)} notional
+								</span>
+							) : null}
 						</div>
-						<pre className="mt-5 overflow-x-auto rounded-lg bg-black/30 p-4 text-xs text-muted-foreground">
-							{dryRunPreview
-								? JSON.stringify(dryRunPreview, null, 2)
-								: "No decision yet"}
-						</pre>
+						{gate && gate.checks.length > 0 ? (
+							<div className="mt-3 grid gap-2 sm:grid-cols-2">
+								{gate.checks.map((c) => (
+									<div
+										key={c.name}
+										className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1.5 text-xs"
+									>
+										<span className="flex items-center gap-1.5">
+											<span className={c.ok ? "text-long" : "text-short"}>
+												{c.ok ? "✓" : "✕"}
+											</span>
+											<span className="text-foreground">{c.name}</span>
+										</span>
+										<span className="truncate text-right text-muted-foreground">
+											{c.detail}
+										</span>
+									</div>
+								))}
+							</div>
+						) : (
+							<p className="mt-3 text-sm text-muted-foreground">
+								{gate?.reasons?.[0] ?? "Run the pipeline to evaluate the gate."}
+							</p>
+						)}
 					</CardContent>
 				</Card>
 
 				<Card className="lg:col-span-3">
 					<CardHeader className="flex flex-row items-center justify-between">
 						<CardTitle className="flex items-center gap-2">
-							<Rocket className="size-5 text-indigo-300" />
+							<Rocket className="size-5 text-muted-foreground" />
 							Order Execution
 						</CardTitle>
 						<span className={orderStatusClass(orderResult?.status)}>
@@ -384,7 +740,11 @@ export function TradingDashboard() {
 										? `#${orderResult.order_id.slice(0, 8)}`
 										: orderResult?.status === "NO_TRADE"
 											? "No trade (HOLD)"
-											: (orderResult?.error ?? "—")
+											: orderResult?.status === "BLOCKED"
+												? (orderResult.reason ?? "blocked by gate")
+												: orderResult?.status === "DRY_RUN"
+													? "dry-run (not armed)"
+													: (orderResult?.error ?? "—")
 								}
 							/>
 							<Step
@@ -418,9 +778,23 @@ export function TradingDashboard() {
 								}
 							/>
 						</div>
+						{orderResult?.gate ? (
+							<p className="mt-4 text-xs text-muted-foreground">
+								Gate:{" "}
+								<span className={gateVerdictClass(orderResult.gate.verdict)}>
+									{orderResult.gate.verdict}
+								</span>
+								{orderResult.gate.reasons[0]
+									? ` · ${orderResult.gate.reasons[0]}`
+									: ""}
+								{!control?.armed && orderResult.status === "DRY_RUN"
+									? " · arm the system to send"
+									: ""}
+							</p>
+						) : null}
 						{orderResult?.mode === "demo" ? (
-							<p className="mt-4 text-xs text-amber-300">
-								Demo mode: sin credenciales Alpaca paper; nada se envió al
+							<p className="mt-4 text-xs text-gold">
+								Demo mode: no Alpaca paper credentials; nothing was sent to the
 								broker.
 							</p>
 						) : null}
@@ -482,6 +856,7 @@ export function TradingDashboard() {
 									<TableHead>Symbol</TableHead>
 									<TableHead>Action</TableHead>
 									<TableHead>Status</TableHead>
+									<TableHead>Gate</TableHead>
 									<TableHead>Size</TableHead>
 								</TableRow>
 							</TableHeader>
@@ -495,16 +870,66 @@ export function TradingDashboard() {
 										<TableCell>{entry.symbol}</TableCell>
 										<TableCell>{entry.action}</TableCell>
 										<TableCell>{entry.status}</TableCell>
+										<TableCell>{entry.verdict ?? "—"}</TableCell>
 										<TableCell>{formatMoney(entry.size)}</TableCell>
 									</TableRow>
 								))}
 								{decisionLog.length === 0 && (
 									<TableRow>
 										<TableCell
-											colSpan={6}
+											colSpan={7}
 											className="py-4 text-muted-foreground"
 										>
 											No entries yet.
+										</TableCell>
+									</TableRow>
+								)}
+							</TableBody>
+						</Table>
+					</CardContent>
+				</Card>
+
+				<Card className="lg:col-span-3">
+					<CardHeader>
+						<CardTitle className="flex items-center gap-2">
+							<ScrollText className="size-5 text-muted-foreground" />
+							Invocations
+						</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>Time</TableHead>
+									<TableHead>Agent</TableHead>
+									<TableHead>Kind</TableHead>
+									<TableHead>Status</TableHead>
+									<TableHead>ms</TableHead>
+									<TableHead>Summary</TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{(logsQuery.data?.entries ?? []).map((entry) => (
+									<TableRow key={entry.id}>
+										<TableCell className="whitespace-nowrap">
+											{entry.ts ? new Date(entry.ts).toLocaleString() : "—"}
+										</TableCell>
+										<TableCell>{entry.agent_id}</TableCell>
+										<TableCell>{entry.kind}</TableCell>
+										<TableCell>{entry.status ?? "—"}</TableCell>
+										<TableCell>{entry.latency_ms ?? "—"}</TableCell>
+										<TableCell className="max-w-md truncate">
+											{entry.summary ?? "—"}
+										</TableCell>
+									</TableRow>
+								))}
+								{(logsQuery.data?.entries.length ?? 0) === 0 && (
+									<TableRow>
+										<TableCell
+											colSpan={6}
+											className="py-4 text-muted-foreground"
+										>
+											Run the pipeline to record invocations.
 										</TableCell>
 									</TableRow>
 								)}
@@ -523,20 +948,53 @@ export function TradingDashboard() {
 	);
 }
 
+function KeyField({
+	label,
+	source,
+	value,
+	onChange,
+}: {
+	label: string;
+	source?: string | undefined;
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	return (
+		<label className="block text-xs text-muted-foreground">
+			<span className="mb-1 flex items-center justify-between gap-2">
+				{label}
+				<Badge variant={sourceBadge(source)} className="uppercase">
+					{source ?? "—"}
+				</Badge>
+			</span>
+			<input
+				type="password"
+				autoComplete="off"
+				placeholder="unchanged"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+				className="h-9 w-full rounded-md border border-input bg-background px-3 font-mono text-sm text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+			/>
+		</label>
+	);
+}
+
+function TickerStat({ label, value }: { label: string; value: string }) {
+	return (
+		<span className="flex items-baseline gap-1.5 text-sm">
+			<span className="text-xs text-muted-foreground">{label}</span>
+			<span className="font-mono tabular-nums text-foreground">{value}</span>
+		</span>
+	);
+}
+
 function Row({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="flex justify-between gap-4">
 			<dt>{label}</dt>
-			<dd className="text-right text-foreground">{value}</dd>
-		</div>
-	);
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-	return (
-		<div>
-			<div className="text-xs text-muted-foreground">{label}</div>
-			<div className="mt-1 text-base text-foreground">{value}</div>
+			<dd className="text-right font-mono tabular-nums text-foreground">
+				{value}
+			</dd>
 		</div>
 	);
 }
@@ -554,13 +1012,9 @@ function Step({
 }) {
 	const state = ok ? "OK" : pending ? "PENDING" : "NO";
 	const mark = ok ? "✓" : pending ? "…" : "✕";
-	const color = ok
-		? "text-emerald-300"
-		: pending
-			? "text-amber-300"
-			: "text-rose-300";
+	const color = ok ? "text-long" : pending ? "text-gold" : "text-short";
 	return (
-		<div className="rounded-lg border border-border/60 bg-black/20 p-4">
+		<div className="rounded-lg border border-border/60 bg-muted/40 p-4">
 			<div className="text-xs text-muted-foreground">{label}</div>
 			<div className={`mt-1 text-lg font-semibold ${color}`}>
 				{mark} {state}
@@ -586,15 +1040,23 @@ function classifyStatus(status: string | undefined): string {
 
 function orderStatusClass(status: string | undefined): string {
 	const base = "text-sm font-semibold";
-	if (status === "FILLED") return `${base} text-emerald-300`;
-	if (status === "REJECTED" || status === "FAILED")
-		return `${base} text-rose-300`;
+	if (status === "FILLED") return `${base} text-long`;
+	if (status === "REJECTED" || status === "FAILED" || status === "BLOCKED")
+		return `${base} text-short`;
 	if (
 		status === "SUBMITTED" ||
 		status === "ACCEPTED" ||
-		status === "PARTIALLY_FILLED"
+		status === "PARTIALLY_FILLED" ||
+		status === "DRY_RUN"
 	)
-		return `${base} text-amber-300`;
+		return `${base} text-gold`;
+	return `${base} text-muted-foreground`;
+}
+
+function gateVerdictClass(verdict: string | undefined): string {
+	const base = "text-sm font-bold uppercase";
+	if (verdict === "ALLOW") return `${base} text-long`;
+	if (verdict === "BLOCK") return `${base} text-short`;
 	return `${base} text-muted-foreground`;
 }
 
@@ -623,24 +1085,24 @@ function formatNumber(value: number | undefined, digits: number): string {
 
 function actionClass(action: string | undefined): string {
 	const base = "mt-3 text-3xl font-semibold";
-	if (action === "BUY") return `${base} text-emerald-300`;
-	if (action === "SELL") return `${base} text-rose-300`;
-	if (action === "HOLD") return `${base} text-amber-300`;
+	if (action === "BUY") return `${base} text-long`;
+	if (action === "SELL") return `${base} text-short`;
+	if (action === "HOLD") return `${base} text-gold`;
 	return `${base} text-muted-foreground`;
 }
 
 function riskClass(riskLevel: string | undefined): string {
 	const base = "text-3xl font-semibold";
-	if (riskLevel === "LOW") return `${base} text-emerald-300`;
-	if (riskLevel === "MEDIUM") return `${base} text-amber-300`;
-	if (riskLevel === "HIGH") return `${base} text-rose-300`;
+	if (riskLevel === "LOW") return `${base} text-long`;
+	if (riskLevel === "MEDIUM") return `${base} text-gold`;
+	if (riskLevel === "HIGH") return `${base} text-short`;
 	return `${base} text-muted-foreground`;
 }
 
 function statusClass(status: string | undefined): string {
 	const base = "text-3xl font-semibold";
-	if (status === "BULLISH") return `${base} text-emerald-300`;
-	if (status === "BEARISH") return `${base} text-rose-300`;
-	if (status === "NEUTRAL") return `${base} text-amber-300`;
+	if (status === "BULLISH") return `${base} text-long`;
+	if (status === "BEARISH") return `${base} text-short`;
+	if (status === "NEUTRAL") return `${base} text-gold`;
 	return `${base} text-muted-foreground`;
 }

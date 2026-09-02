@@ -4,3 +4,14 @@ services:
       context: .
     ports:
       - "3200:80"
+    environment:
+      API_UPSTREAM: tradelix-backend:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - tradelix
+
+networks:
+  tradelix:
+    name: tradelix
+    external: true
