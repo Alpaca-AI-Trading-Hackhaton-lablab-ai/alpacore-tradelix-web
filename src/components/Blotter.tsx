@@ -1,6 +1,7 @@
 import { Rocket, ScrollText } from "lucide-react";
 import { useState } from "react";
 import type {
+	PocApiUsage,
 	PocConditionalOrder,
 	PocControl,
 	PocInvocation,
@@ -35,7 +36,13 @@ export type DecisionLogEntry = {
 	verdict?: string;
 };
 
-type Tab = "positions" | "execution" | "conditionals" | "invocations" | "log";
+type Tab =
+	| "positions"
+	| "execution"
+	| "conditionals"
+	| "invocations"
+	| "log"
+	| "usage";
 
 const TABS: { id: Tab; label: string }[] = [
 	{ id: "positions", label: "Positions" },
@@ -43,6 +50,7 @@ const TABS: { id: Tab; label: string }[] = [
 	{ id: "conditionals", label: "Conditional Orders" },
 	{ id: "invocations", label: "Invocations" },
 	{ id: "log", label: "Decision Log" },
+	{ id: "usage", label: "Usage" },
 ];
 
 export function Blotter({
@@ -54,6 +62,7 @@ export function Blotter({
 	decisionLog,
 	conditionals,
 	onCancelConditional,
+	usage,
 }: {
 	symbol: string;
 	positions: PocPosition[];
@@ -63,6 +72,7 @@ export function Blotter({
 	decisionLog: DecisionLogEntry[];
 	conditionals: PocConditionalOrder[];
 	onCancelConditional?: ((id: string) => void) | undefined;
+	usage?: PocApiUsage[];
 }) {
 	const [tab, setTab] = useState<Tab>("positions");
 
@@ -109,6 +119,7 @@ export function Blotter({
 					<InvocationsTable entries={invocations} />
 				) : null}
 				{tab === "log" ? <DecisionLogTable entries={decisionLog} /> : null}
+				{tab === "usage" ? <UsageTable entries={usage ?? []} /> : null}
 			</CardContent>
 		</Card>
 	);
@@ -416,6 +427,74 @@ function DecisionLogTable({ entries }: { entries: DecisionLogEntry[] }) {
 					<TableRow>
 						<TableCell colSpan={7} className="py-4 text-muted-foreground">
 							No entries yet.
+						</TableCell>
+					</TableRow>
+				)}
+			</TableBody>
+		</Table>
+	);
+}
+
+function UsageTable({ entries }: { entries: PocApiUsage[] }) {
+	return (
+		<Table>
+			<TableHeader>
+				<TableRow>
+					<TableHead>Provider</TableHead>
+					<TableHead>Used</TableHead>
+					<TableHead>Budget</TableHead>
+					<TableHead>Remaining</TableHead>
+					<TableHead>Est. $</TableHead>
+					<TableHead>State</TableHead>
+					<TableHead>Degrade</TableHead>
+				</TableRow>
+			</TableHeader>
+			<TableBody>
+				{entries.map((row) => {
+					const pct =
+						row.limit != null && row.limit > 0
+							? Math.min(100, Math.round((row.used / row.limit) * 100))
+							: null;
+					return (
+						<TableRow key={row.provider}>
+							<TableCell className="uppercase">{row.provider}</TableCell>
+							<TableCell className="font-mono">
+								{formatNumber(row.used, 0)}
+								{pct != null ? (
+									<div className="mt-1 h-1.5 w-24 overflow-hidden rounded bg-muted">
+										<div
+											className={`h-full ${
+												row.state === "OVER"
+													? "bg-short"
+													: row.state === "WARN"
+														? "bg-gold"
+														: "bg-long"
+											}`}
+											style={{ width: `${pct}%` }}
+										/>
+									</div>
+								) : null}
+							</TableCell>
+							<TableCell>
+								{row.limit != null ? formatNumber(row.limit, 0) : "—"}
+							</TableCell>
+							<TableCell>
+								{row.remaining != null ? formatNumber(row.remaining, 0) : "—"}
+							</TableCell>
+							<TableCell>{formatMoney(row.est_cost_usd)}</TableCell>
+							<TableCell>
+								<span className={orderStatusClass(String(row.state))}>
+									{row.state}
+								</span>
+							</TableCell>
+							<TableCell>{row.degrade_level}</TableCell>
+						</TableRow>
+					);
+				})}
+				{entries.length === 0 && (
+					<TableRow>
+						<TableCell colSpan={7} className="py-4 text-muted-foreground">
+							No usage recorded for this window.
 						</TableCell>
 					</TableRow>
 				)}

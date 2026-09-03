@@ -488,6 +488,9 @@ Se añade `config.is_within_window(now)` y se integra como **hard check** en `ev
   órdenes asociadas** quedan acotados por el mismo periodo, incluso una condicional de precio que se
   cumpla fuera de la ventana **no** ejecuta.
 - `Kill` sigue por encima de todo (pausa runs); el wind-down de fin de ventana sí se ejecuta.
+- **Presupuesto de consumo de APIs**: la misma ventana acota el gasto de Groq/Tavily/Alpaca. El
+  limitador (block + degrade) puede **degradar o parar** el scheduler al agotarse el presupuesto — ver
+  spec dedicado [`api-usage-and-limits.md`](./api-usage-and-limits.md).
 
 ### 14.7 Persistencia (durable, a diferencia de arm/kill)
 

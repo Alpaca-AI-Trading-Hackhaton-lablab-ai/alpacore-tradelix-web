@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import {
 	Activity,
 	Brain,
@@ -9,28 +8,18 @@ import {
 	Landmark,
 	Layers,
 	Newspaper,
-	Play,
 	Rocket,
 	ShieldAlert,
 	ShieldCheck,
-	Square,
 	Wallet,
 	X,
 } from "lucide-react";
-import {
-	type ComponentType,
-	useCallback,
-	useEffect,
-	useRef,
-	useState,
-} from "react";
-import {
-	type PipelineOpts,
-	type PocNodeStatus,
-	type PocOrderResult,
-	type PocPipelineNode,
-	type PocReactTurn,
-	streamPipeline,
+import { type ComponentType, useEffect, useState } from "react";
+import type {
+	PocInvocation,
+	PocNodeStatus,
+	PocOrderResult,
+	PocSchedule,
 } from "@/api/market-client";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -141,7 +130,7 @@ const NODE_META: Record<
 	execution: {
 		kind: "locked",
 		role: "deterministic",
-		blurb: "Broker submit after ALLOW + arm. Not part of the SSE graph.",
+		blurb: "Broker submit after ALLOW + Armed. Safe ticks stay dry-run.",
 	},
 };
 
@@ -178,14 +167,6 @@ function orderToStatus(order?: PocOrderResult | null): NodeState {
 const initialStates = (): Record<string, NodeState> =>
 	Object.fromEntries(NODES.map((n) => [n.id, { status: "idle" }]));
 
-const CACHE_KEY: Record<string, (symbol: string) => unknown[]> = {
-	market_state: (s) => ["market", s],
-	risk: (s) => ["risk", s],
-	decision: (s) => ["decision", s],
-	gate: (s) => ["gate", s],
-	account: () => ["account"],
-};
-
 export type AgentSettings = {
 	sentimentModel: string;
 	decisionModel: string;
@@ -195,91 +176,96 @@ export type AgentSettings = {
 	decisionIndicators: string[];
 };
 
+function asNodeStatus(value?: string | null): PocNodeStatus {
+	if (
+		value === "idle" ||
+		value === "running" ||
+		value === "done" ||
+		value === "error"
+	) {
+		return value;
+	}
+	return "done";
+}
+
+function formatCountdown(
+	nextRunTs: string | null | undefined,
+	state: string,
+	inFlight: boolean,
+	now: number,
+): string {
+	if (inFlight) return "running";
+	if (state === "paused") return "paused";
+	if (state === "ended") return "ended";
+	if (state !== "running" && state !== "scheduled") return state || "stopped";
+	if (!nextRunTs) return "waiting";
+	const ms = new Date(nextRunTs).getTime() - now;
+	if (Number.isNaN(ms)) return "waiting";
+	if (ms <= 0) return "due";
+	const total = Math.floor(ms / 1000);
+	const hours = Math.floor(total / 3600);
+	const minutes = Math.floor((total % 3600) / 60);
+	const seconds = total % 60;
+	if (hours > 0) return `next run ${hours}h ${minutes}m`;
+	if (minutes > 0) return `next run ${minutes}m ${seconds}s`;
+	return `next run ${seconds}s`;
+}
+
 export function AgentGraph({
 	symbol,
 	orderResult,
 	settings,
+	schedule,
+	logs,
 }: {
 	symbol: string;
 	orderResult?: PocOrderResult | null;
 	settings: AgentSettings;
+	schedule?: PocSchedule | null;
+	logs?: PocInvocation[];
 }) {
-	const queryClient = useQueryClient();
 	const [states, setStates] =
 		useState<Record<string, NodeState>>(initialStates);
-	const [running, setRunning] = useState(false);
 	const [selected, setSelected] = useState<string | null>(null);
-	const [reactLog, setReactLog] = useState<
-		Array<PocReactTurn & { id: string }>
-	>([]);
-	const esRef = useRef<EventSource | null>(null);
+	const [now, setNow] = useState(() => Date.now());
 
 	const execState = orderToStatus(orderResult);
-
-	const pipelineOpts = useCallback((): PipelineOpts => {
-		const opts: PipelineOpts = {
-			deepSentiment: settings.deepSentiment,
-			deepDecision: settings.deepDecision,
-		};
-		if (settings.deepSentiment || settings.deepDecision) opts.deep = true;
-		if (settings.sentimentModel) opts.sentimentModel = settings.sentimentModel;
-		if (settings.decisionModel) opts.decisionModel = settings.decisionModel;
-		if (settings.indicators.length)
-			opts.indicators = settings.indicators.join(",");
-		if (settings.decisionIndicators.length)
-			opts.decisionIndicators = settings.decisionIndicators.join(",");
-		return opts;
-	}, [settings]);
-
-	const startStream = useCallback(
-		(opts: PipelineOpts) => {
-			esRef.current?.close();
-			setStates(initialStates());
-			setReactLog([]);
-			setRunning(true);
-			esRef.current = streamPipeline(
-				symbol,
-				{
-					onNode: (ev: PocPipelineNode) => {
-						setStates((prev) => ({
-							...prev,
-							[ev.node]: {
-								status: ev.status,
-								message: ev.message ?? null,
-							},
-						}));
-						const keyFn = CACHE_KEY[ev.node];
-						if (ev.status === "done" && keyFn && ev.output) {
-							queryClient.setQueryData(keyFn(symbol), ev.output);
-						}
-					},
-					onReact: (turn) => {
-						setReactLog((prev) =>
-							[...prev, { ...turn, id: crypto.randomUUID() }].slice(-16),
-						);
-					},
-					onDone: () => setRunning(false),
-					onError: () => setRunning(false),
-				},
-				opts,
-			);
-		},
-		[symbol, queryClient],
-	);
-
-	function stop() {
-		esRef.current?.close();
-		esRef.current = null;
-		setRunning(false);
-	}
-
-	function runManual() {
-		startStream(pipelineOpts());
-	}
+	const inFlight = Boolean(schedule?.in_flight);
+	const state = String(schedule?.state ?? "disabled");
 
 	useEffect(() => {
-		return () => esRef.current?.close();
+		const id = window.setInterval(() => setNow(Date.now()), 1000);
+		return () => window.clearInterval(id);
 	}, []);
+
+	useEffect(() => {
+		const nodes = schedule?.nodes;
+		if (!nodes?.length) return;
+		setStates((prev) => {
+			const next = { ...prev };
+			for (const ev of nodes) {
+				next[ev.node] = {
+					status: asNodeStatus(ev.status),
+					message: ev.message ?? null,
+				};
+			}
+			return next;
+		});
+	}, [schedule?.last_run_ts, schedule?.nodes]);
+
+	useEffect(() => {
+		if (!inFlight) return;
+		setStates((prev) => {
+			const next = { ...prev };
+			for (const node of NODES) {
+				if (node.id === "execution") continue;
+				if (next[node.id]?.status === "idle") {
+					next[node.id] = { status: "running", message: "scanning…" };
+				}
+			}
+			return next;
+		});
+	}, [inFlight]);
 
 	const stateOf = (id: string): NodeState =>
 		id === "execution" ? execState : (states[id] ?? { status: "idle" });
@@ -288,9 +274,13 @@ export function AgentGraph({
 	const selectedDef = NODES.find((n) => n.id === selected);
 	const meta = selected ? NODE_META[selected] : null;
 	const stSelected = selected ? stateOf(selected) : null;
-	const nodeReact = selected
-		? reactLog.filter((turn) => turn.node === selected)
-		: [];
+	const lastSummary = selected
+		? (logs ?? []).find(
+				(entry) =>
+					entry.agent_id === selected &&
+					(entry.kind === "run_summary" || entry.kind === "run"),
+			)
+		: undefined;
 
 	return (
 		<Card>
@@ -301,24 +291,19 @@ export function AgentGraph({
 							Agent Pipeline
 						</h2>
 						<p className="text-xs text-muted-foreground">
-							{NODES.length} agents · idle until Run · {symbol}
+							{NODES.length} agents · {symbol}
 							{deepOn ? " · deep" : ""}
+							{" · "}
+							{formatCountdown(
+								schedule?.next_run_ts,
+								state,
+								inFlight,
+								now,
+							)}
 						</p>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
 						<Legend />
-						<button
-							type="button"
-							onClick={running ? stop : runManual}
-							className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-						>
-							{running ? (
-								<Square className="size-4" />
-							) : (
-								<Play className="size-4" />
-							)}
-							{running ? "Stop" : "Run pipeline"}
-						</button>
 					</div>
 				</div>
 
@@ -407,6 +392,11 @@ export function AgentGraph({
 								{stSelected.message ?? stSelected.status}
 							</p>
 						) : null}
+						{lastSummary?.summary ? (
+							<p className="mb-2 text-xs text-foreground">
+								Last summary: {lastSummary.summary}
+							</p>
+						) : null}
 						{meta.kind === "locked" ? (
 							<p className="text-xs text-muted-foreground">
 								Not configurable. Architecture stays deterministic here.
@@ -416,59 +406,12 @@ export function AgentGraph({
 								Configure models, Deep, and indicators in Options.
 							</p>
 						)}
-						{nodeReact.length > 0 ? (
-							<div className="mt-3 max-h-32 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-								{nodeReact.map((turn) => (
-									<div key={turn.id} className="mb-1.5">
-										<span className="text-foreground">
-											#{(turn.turn ?? 0) + 1}
-										</span>
-										{turn.tool ? (
-											<span className="text-gold"> · {turn.tool}</span>
-										) : null}
-										{turn.thought ? (
-											<div className="line-clamp-2 pl-2">{turn.thought}</div>
-										) : null}
-										{turn.observation ? (
-											<div className="line-clamp-2 pl-2 text-muted-foreground/80">
-												obs: {turn.observation}
-											</div>
-										) : null}
-									</div>
-								))}
-							</div>
-						) : null}
 					</aside>
 				) : (
 					<p className="mt-3 text-xs text-muted-foreground">
-						Click an agent to inspect output or ReAct.
+						Click an agent to inspect its last summary.
 					</p>
 				)}
-
-				{reactLog.length > 0 ? (
-					<div className="mt-3 max-h-40 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
-						{reactLog.map((turn) => (
-							<div key={turn.id} className="mb-1.5">
-								<span className="text-foreground">
-									{turn.node}#{(turn.turn ?? 0) + 1}
-								</span>
-								{turn.tool ? (
-									<span className="text-gold"> · {turn.tool}</span>
-								) : null}
-								{turn.thought ? (
-									<div className="line-clamp-2 pl-3 text-muted-foreground">
-										{turn.thought}
-									</div>
-								) : null}
-								{turn.observation ? (
-									<div className="line-clamp-2 pl-3 text-muted-foreground/80">
-										obs: {turn.observation}
-									</div>
-								) : null}
-							</div>
-						))}
-					</div>
-				) : null}
 			</CardContent>
 		</Card>
 	);

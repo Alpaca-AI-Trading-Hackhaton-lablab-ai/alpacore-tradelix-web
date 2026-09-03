@@ -15,8 +15,9 @@ test("renders TradeLix dashboard without client errors", async ({ page }) => {
 
 	await expect(page.getByTestId("tradelix-dashboard")).toBeVisible();
 	await expect(page.getByRole("heading", { name: "SPY" })).toBeVisible();
-	await expect(page.getByRole("button", { name: /Refresh/i })).toBeVisible();
-	await expect(page.getByRole("button", { name: /Dry-run/i })).toBeVisible();
+	await expect(page.getByRole("button", { name: /Options/i })).toBeVisible();
+	await expect(page.getByRole("button", { name: /^Start$/i })).toBeVisible();
+	await expect(page.getByRole("button", { name: /Preview plan/i })).toBeVisible();
 
 	expect(consoleErrors).toEqual([]);
 });

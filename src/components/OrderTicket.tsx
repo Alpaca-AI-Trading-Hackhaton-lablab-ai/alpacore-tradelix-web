@@ -379,7 +379,7 @@ export function OrderTicket({
 						onClick={onDryRun}
 						disabled={dryRunPending || !check.ok}
 					>
-						{dryRunPending ? "Previewing…" : "Dry-run plan"}
+						{dryRunPending ? "Previewing…" : "Preview plan"}
 					</Button>
 
 					{preview?.would_call?.length ? (

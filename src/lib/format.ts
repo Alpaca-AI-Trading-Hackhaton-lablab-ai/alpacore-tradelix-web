@@ -41,13 +41,16 @@ export function classifyStatus(status: string | undefined): string {
 export function orderStatusClass(status: string | undefined): string {
 	const base = "text-sm font-semibold";
 	const s = (status ?? "").toUpperCase();
-	if (s === "FILLED" || s === "DONE" || s === "BE_MOVED") return `${base} text-long`;
+	if (s === "FILLED" || s === "DONE" || s === "BE_MOVED" || s === "OK" || s === "RUNNING")
+		return `${base} text-long`;
 	if (
 		s === "REJECTED" ||
 		s === "FAILED" ||
 		s === "BLOCKED" ||
 		s === "CANCELLED" ||
-		s === "EXPIRED"
+		s === "EXPIRED" ||
+		s === "PAUSED" ||
+		s === "OVER"
 	)
 		return `${base} text-short`;
 	if (
@@ -58,7 +61,9 @@ export function orderStatusClass(status: string | undefined): string {
 		s === "ARMED" ||
 		s === "WORKING" ||
 		s === "TRIGGERED" ||
-		s === "PREVIEWED"
+		s === "PREVIEWED" ||
+		s === "SCHEDULED" ||
+		s === "WARN"
 	)
 		return `${base} text-gold`;
 	return `${base} text-muted-foreground`;

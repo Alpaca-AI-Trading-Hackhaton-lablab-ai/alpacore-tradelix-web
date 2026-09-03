@@ -1,9 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-	PlayCircle,
 	Power,
-	RefreshCw,
-	Rocket,
 	ShieldAlert,
 	SlidersHorizontal,
 } from "lucide-react";
@@ -11,23 +8,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
 	buildDryRunPreview,
-	createConditionalOrder,
 	deleteConditionalOrder,
-	executeBracket,
-	executeOrder,
 	fetchAccount,
 	fetchBars,
+	fetchBudgets,
 	fetchConditionalOrders,
 	fetchControl,
 	fetchLogs,
 	fetchModels,
-	fetchOrderStatus,
 	fetchPositions,
+	fetchSchedule,
 	fetchSettings,
 	fetchSpyQuote,
+	fetchUsage,
+	saveBudgets,
+	saveSchedule,
+	saveSettings,
+	startSchedule,
+	stopSchedule,
 	INDICATOR_OPTIONS,
 	type BracketPreviewOut,
-	type PipelineOpts,
+	type PocApiBudget,
 	type PocBracketPlan,
 	type PocDecision,
 	type PocGate,
@@ -38,7 +39,6 @@ import {
 	type PocSettings,
 	type PocTrigger,
 	previewBracket,
-	saveSettings,
 	setArmed,
 	setKill,
 } from "@/api/market-client";
@@ -48,7 +48,6 @@ import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import { env } from "@/env";
 import {
 	actionClass,
-	classifyStatus,
 	formatMoney,
 	formatNumber,
 	gateVerdictClass,
@@ -58,9 +57,10 @@ import {
 } from "@/lib/format";
 import { AgentGraph, type AgentSettings } from "./AgentGraph";
 import { Blotter, type DecisionLogEntry } from "./Blotter";
-import { OptionsDrawer } from "./OptionsDrawer";
+import { OptionsDrawer, type LoopSettings } from "./OptionsDrawer";
 import { OrderTicket } from "./OrderTicket";
 import { PriceChart } from "./PriceChart";
+import { ScheduleChip } from "./ScheduleChip";
 
 const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
 const ALL_INDICATORS = INDICATOR_OPTIONS.map((item) => item.id);
@@ -108,20 +108,21 @@ function settingsToAgents(settings: AgentSettings) {
 	};
 }
 
-function settingsToOpts(settings: AgentSettings): PipelineOpts {
-	const opts: PipelineOpts = {
-		deepSentiment: settings.deepSentiment,
-		deepDecision: settings.deepDecision,
-	};
-	if (settings.deepSentiment || settings.deepDecision) opts.deep = true;
-	if (settings.sentimentModel) opts.sentimentModel = settings.sentimentModel;
-	if (settings.decisionModel) opts.decisionModel = settings.decisionModel;
-	if (settings.indicators.length)
-		opts.indicators = settings.indicators.join(",");
-	if (settings.decisionIndicators.length)
-		opts.decisionIndicators = settings.decisionIndicators.join(",");
-	return opts;
-}
+const DEFAULT_LOOP: LoopSettings = {
+	maxCredit: 500,
+	intervalSeconds: 1800,
+	windowStart: null,
+	windowEnd: null,
+	universe: [...SYMBOLS],
+};
+
+const SCHEDULE_CACHE: Record<string, (sym: string) => unknown[]> = {
+	market_state: (s) => ["market", s],
+	risk: (s) => ["risk", s],
+	decision: (s) => ["decision", s],
+	gate: (s) => ["gate", s],
+	account: () => ["account"],
+};
 
 export function TradingDashboard() {
 	const [symbol, setSymbol] = useState(env.VITE_DEFAULT_SYMBOL.toUpperCase());
@@ -145,6 +146,9 @@ export function TradingDashboard() {
 		null,
 	);
 	const [ticketState, setTicketState] = useState<"draft" | "previewed">("draft");
+	const [loop, setLoop] = useState<LoopSettings>(DEFAULT_LOOP);
+	const loopHydrated = useRef(false);
+	const [scheduleError, setScheduleError] = useState<string | null>(null);
 
 	const handlePlanChange = useCallback(
 		(plan: PocBracketPlan | null, dirty: boolean) => {
@@ -238,6 +242,20 @@ export function TradingDashboard() {
 		queryFn: () => fetchConditionalOrders(symbol),
 		refetchInterval: 10_000,
 	});
+	const scheduleQuery = useQuery({
+		queryKey: ["schedule"],
+		queryFn: fetchSchedule,
+		refetchInterval: 5_000,
+	});
+	const usageQuery = useQuery({
+		queryKey: ["usage"],
+		queryFn: fetchUsage,
+		refetchInterval: 10_000,
+	});
+	const budgetsQuery = useQuery({
+		queryKey: ["usage-budgets"],
+		queryFn: fetchBudgets,
+	});
 	const catalog = modelsQuery.data;
 	const mergedSettings: AgentSettings = {
 		...settings,
@@ -245,7 +263,6 @@ export function TradingDashboard() {
 			settings.sentimentModel || catalog?.defaults.sentiment || "",
 		decisionModel: settings.decisionModel || catalog?.defaults.decision || "",
 	};
-	const pipelineOpts = settingsToOpts(mergedSettings);
 	const barsQuery = useQuery({
 		queryKey: ["bars", symbol, mergedSettings.indicators.join(",")],
 		queryFn: () =>
@@ -259,6 +276,53 @@ export function TradingDashboard() {
 		},
 		enabled: false,
 	});
+
+	useEffect(() => {
+		const sched = scheduleQuery.data;
+		if (!sched || loopHydrated.current) return;
+		loopHydrated.current = true;
+		setLoop({
+			maxCredit: sched.max_credit || DEFAULT_LOOP.maxCredit,
+			intervalSeconds: Math.max(30, sched.interval_seconds || 1800),
+			windowStart: sched.window_start ?? null,
+			windowEnd: sched.window_end ?? null,
+			universe: sched.universe?.length ? [...sched.universe] : [...SYMBOLS],
+		});
+	}, [scheduleQuery.data]);
+
+	useEffect(() => {
+		const nodes = scheduleQuery.data?.nodes;
+		if (!nodes?.length) return;
+		for (const ev of nodes) {
+			const keyFn = SCHEDULE_CACHE[ev.node];
+			if (keyFn && ev.output) {
+				queryClient.setQueryData(keyFn(symbol), ev.output);
+			}
+		}
+		const results = scheduleQuery.data?.results;
+		if (results?.length) {
+			const last = results[results.length - 1];
+			if (last) {
+				const next: PocOrderResult = {
+					status: String(last.status ?? "DRY_RUN"),
+					reason: typeof last.reason === "string" ? last.reason : null,
+				};
+				if (last.would_call != null) {
+					next.would_call = last.would_call as NonNullable<
+						PocOrderResult["would_call"]
+					>;
+				}
+				setOrderResult(next);
+			}
+		}
+	}, [scheduleQuery.data?.last_run_ts, scheduleQuery.data?.nodes, scheduleQuery.data?.results, queryClient, symbol]);
+
+	useEffect(() => {
+		if (!scheduleQuery.data?.last_run_ts) return;
+		void queryClient.invalidateQueries({ queryKey: ["positions"] });
+		void queryClient.invalidateQueries({ queryKey: ["account"] });
+		void queryClient.invalidateQueries({ queryKey: ["logs"] });
+	}, [scheduleQuery.data?.last_run_ts, queryClient]);
 
 	useEffect(() => {
 		if (!storedQuery.data) return;
@@ -309,18 +373,52 @@ export function TradingDashboard() {
 			queryClient.invalidateQueries({ queryKey: ["conditionals"] }),
 	});
 
-	const refresh = useMutation({
-		mutationFn: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["account"] });
-			await queryClient.invalidateQueries({ queryKey: ["quote"] });
-			await queryClient.invalidateQueries({ queryKey: ["positions"] });
-			await queryClient.invalidateQueries({ queryKey: ["control"] });
-			await queryClient.invalidateQueries({ queryKey: ["bars"] });
-			await queryClient.invalidateQueries({ queryKey: ["logs"] });
-			await queryClient.invalidateQueries({ queryKey: ["settings"] });
+	const persistLoop = useMutation({
+		mutationFn: () =>
+			saveSchedule({
+				max_credit: loop.maxCredit,
+				interval_seconds: loop.intervalSeconds,
+				universe: loop.universe,
+				window_start: loop.windowStart,
+				window_end: loop.windowEnd,
+				end_action: "stop_cancel_flatten",
+			}),
+		onSuccess: (view) => {
+			setScheduleError(null);
+			queryClient.setQueryData(["schedule"], view);
+		},
+		onError: (err) => {
+			setScheduleError(err instanceof Error ? err.message : "Save failed");
 		},
 	});
+	const startLoop = useMutation({
+		mutationFn: () =>
+			startSchedule({
+				focus: symbol,
+				interval_seconds: loop.intervalSeconds,
+				max_credit: loop.maxCredit,
+				universe: loop.universe,
+				window_start: loop.windowStart,
+				window_end: loop.windowEnd,
+			}),
+		onSuccess: (view) => {
+			setScheduleError(null);
+			queryClient.setQueryData(["schedule"], view);
+		},
+		onError: (err) => {
+			setScheduleError(err instanceof Error ? err.message : "Start failed");
+			setOptionsOpen(true);
+		},
+	});
+	const stopLoop = useMutation({
+		mutationFn: () => stopSchedule(),
+		onSuccess: (view) => queryClient.setQueryData(["schedule"], view),
+	});
 
+	const persistBudgets = useMutation({
+		mutationFn: (items: PocApiBudget[]) => saveBudgets(items),
+		onSuccess: (view) => queryClient.setQueryData(["usage-budgets"], view),
+	});
 	const saveKeys = useMutation({
 		mutationFn: async () => {
 			const keys: Record<string, string> = {};
@@ -372,91 +470,6 @@ export function TradingDashboard() {
 			if (decision) {
 				queryClient.setQueryData(["decision", symbol], decision);
 			}
-		},
-	});
-
-	const execute = useMutation({
-		mutationFn: async (): Promise<PocOrderResult> => {
-			if (ticketDirty && orderPlan) {
-				if (ticketTrigger) {
-					const created = await createConditionalOrder({
-						plan: orderPlan,
-						trigger: ticketTrigger,
-					});
-					if (!("id" in created) || !created.id) {
-						const blocked = created as {
-							status?: string;
-							errors?: string[];
-							gate?: PocGate;
-						};
-						const blockedOut: PocOrderResult = {
-							status: blocked.status ?? "BLOCKED",
-							reason: blocked.errors?.[0] ?? "conditional rejected",
-							decision: {
-								symbol: orderPlan.symbol,
-								action: orderPlan.side === "buy" ? "BUY" : "SELL",
-								position_size: orderPlan.size.notional ?? 0,
-								technical_signal: "",
-								sentiment: "",
-								risk_level: "",
-							},
-						};
-						if (blocked.gate) blockedOut.gate = blocked.gate;
-						return blockedOut;
-					}
-					await queryClient.invalidateQueries({ queryKey: ["conditionals"] });
-					const armed: PocOrderResult = {
-						status: created.status?.toUpperCase() ?? "ARMED",
-						reason: "Conditional armed — not sent to Alpaca",
-						decision: {
-							symbol: created.plan.symbol,
-							action: created.plan.side === "buy" ? "BUY" : "SELL",
-							position_size: created.plan.size.notional ?? 0,
-							technical_signal: "",
-							sentiment: "",
-							risk_level: "",
-						},
-					};
-					return armed;
-				}
-				return executeBracket(orderPlan);
-			}
-			return executeOrder(symbol, pipelineOpts);
-		},
-		onSuccess: async (result) => {
-			setOrderResult(result);
-			pushLog({
-				kind: "ORDER",
-				symbol: result.decision?.symbol ?? symbol,
-				action: result.decision?.action ?? "—",
-				status: result.status,
-				size: result.notional ?? result.decision?.position_size ?? 0,
-				...(result.gate?.verdict ? { verdict: result.gate.verdict } : {}),
-			});
-			await queryClient.invalidateQueries({ queryKey: ["positions"] });
-			await queryClient.invalidateQueries({ queryKey: ["account"] });
-			await queryClient.invalidateQueries({ queryKey: ["logs"] });
-			await queryClient.invalidateQueries({ queryKey: ["conditionals"] });
-			if (
-				result.order_id &&
-				["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(result.status)
-			) {
-				const orderId = result.order_id;
-				for (let i = 0; i < 5; i++) {
-					await new Promise((r) => setTimeout(r, 1000));
-					const latest = await fetchOrderStatus(orderId);
-					const status = classifyStatus(latest.status);
-					setOrderResult((prev) => ({ ...prev, ...latest, status }));
-					if (["FILLED", "REJECTED"].includes(status)) break;
-				}
-				await queryClient.invalidateQueries({ queryKey: ["positions"] });
-			}
-		},
-		onError: (err) => {
-			setOrderResult({
-				status: "FAILED",
-				error: err instanceof Error ? err.message : "execute failed",
-			});
 		},
 	});
 
@@ -526,6 +539,15 @@ export function TradingDashboard() {
 							<Power className="size-3.5" />
 							{control?.kill ? "Kill on" : "Kill"}
 						</button>
+						<ScheduleChip
+							schedule={scheduleQuery.data ?? null}
+							usage={usageQuery.data?.entries}
+							onStart={() => startLoop.mutate()}
+							onStop={() => stopLoop.mutate()}
+							onNeedOptions={() => setOptionsOpen(true)}
+							startPending={startLoop.isPending}
+							stopPending={stopLoop.isPending}
+						/>
 					</div>
 				</div>
 			</div>
@@ -555,31 +577,6 @@ export function TradingDashboard() {
 						<SlidersHorizontal />
 						Options
 					</Button>
-					<Button
-						type="button"
-						variant="outline"
-						onClick={() => refresh.mutate()}
-					>
-						<RefreshCw className={refresh.isPending ? "animate-spin" : ""} />
-						Refresh
-					</Button>
-					<Button
-						type="button"
-						variant="secondary"
-						onClick={() => dryRun.mutate()}
-						disabled={!decision}
-					>
-						<PlayCircle />
-						Dry-run
-					</Button>
-					<Button
-						type="button"
-						onClick={() => execute.mutate()}
-						disabled={execute.isPending}
-					>
-						<Rocket className={execute.isPending ? "animate-pulse" : ""} />
-						{execute.isPending ? "Executing…" : "Execute"}
-					</Button>
 				</div>
 			</header>
 
@@ -598,6 +595,8 @@ export function TradingDashboard() {
 						symbol={symbol}
 						orderResult={orderResult}
 						settings={mergedSettings}
+						schedule={scheduleQuery.data ?? null}
+						logs={logsQuery.data?.entries ?? []}
 					/>
 				</div>
 
@@ -660,6 +659,7 @@ export function TradingDashboard() {
 					decisionLog={decisionLog}
 					conditionals={conditionalsQuery.data?.orders ?? []}
 					onCancelConditional={(id) => cancelConditional.mutate(id)}
+					usage={usageQuery.data?.entries ?? []}
 				/>
 
 				{isLoading ? (
@@ -681,6 +681,15 @@ export function TradingDashboard() {
 				onSaveKeys={() => saveKeys.mutate()}
 				savingKeys={saveKeys.isPending}
 				settingsError={Boolean(storedQuery.error)}
+				loop={loop}
+				onLoop={setLoop}
+				universeChoices={SYMBOLS}
+				onSaveSchedule={() => persistLoop.mutate()}
+				savingSchedule={persistLoop.isPending}
+				scheduleError={scheduleError}
+				budgets={budgetsQuery.data?.budgets ?? []}
+				onSaveBudgets={(next) => persistBudgets.mutate(next)}
+				savingBudgets={persistBudgets.isPending}
 			/>
 		</div>
 	);

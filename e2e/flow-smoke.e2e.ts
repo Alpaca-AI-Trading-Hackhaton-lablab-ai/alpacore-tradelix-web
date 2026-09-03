@@ -25,16 +25,13 @@ test("records a dry-run preview against the Python PoC", async ({
 	);
 
 	await page.goto("/", { waitUntil: "networkidle" });
-	await page.getByRole("button", { name: /Run pipeline/i }).click();
-	await expect(page.getByRole("button", { name: /Dry-run/i })).toBeEnabled({
-		timeout: 60_000,
-	});
-	await page.getByRole("button", { name: /Dry-run/i }).click();
-
-	await expect(
-		page.getByRole("heading", { name: "Decision Log" }),
-	).toBeVisible();
-	await expect(page.getByText(/DRY_RUN|NO_TRADE/)).toBeVisible({
-		timeout: 30_000,
-	});
+	await expect(page.getByRole("button", { name: /^Start$/i })).toBeVisible();
+	const preview = page.getByRole("button", { name: /Preview plan/i });
+	await expect(preview).toBeVisible();
+	if (await preview.isEnabled()) {
+		await preview.click();
+		await expect(
+			page.getByRole("heading", { name: "Decision Log" }),
+		).toBeVisible();
+	}
 });

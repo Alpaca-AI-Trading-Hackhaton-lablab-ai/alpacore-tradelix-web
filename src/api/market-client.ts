@@ -156,6 +156,38 @@ export type PocControl = {
 	execute_enabled_default: boolean;
 };
 
+export type ScheduleState =
+	| "disabled"
+	| "scheduled"
+	| "running"
+	| "paused"
+	| "ended";
+
+export type PocSchedule = {
+	enabled: boolean;
+	interval_seconds: number;
+	max_credit: number;
+	universe: string[];
+	window_start?: string | null;
+	window_end?: string | null;
+	end_action?: "stop_cancel_flatten" | string;
+	wound_down?: boolean;
+	last_run_ts?: string | null;
+	next_run_ts?: string | null;
+	in_flight?: boolean;
+	state?: ScheduleState | string;
+	nodes?: Array<{
+		node: string;
+		status?: string;
+		message?: string | null;
+		output?: unknown;
+	}>;
+	intents?: Array<Record<string, unknown>>;
+	results?: Array<Record<string, unknown>>;
+	focus?: string | null;
+	error?: string | null;
+};
+
 export type PocAuditEntry = {
 	ts: string;
 	symbol?: string | null;
@@ -377,6 +409,19 @@ async function postJsonBody<T>(path: string, body: unknown): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
+async function putJsonBody<T>(path: string, body: unknown): Promise<T> {
+	const res = await fetch(`${base()}${path}`, {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => "");
+		throw new Error(`${path} ${res.status}${detail ? `: ${detail}` : ""}`);
+	}
+	return res.json() as Promise<T>;
+}
+
 export async function fetchMarketState(
 	symbol: string,
 ): Promise<PocMarketState> {
@@ -496,6 +541,71 @@ export async function setArmed(enabled: boolean): Promise<PocControl> {
 
 export async function setKill(enabled: boolean): Promise<PocControl> {
 	return postJson<PocControl>(`/control/kill?enabled=${enabled}`);
+}
+
+export async function fetchSchedule(): Promise<PocSchedule> {
+	return getJson<PocSchedule>("/schedule");
+}
+
+export async function saveSchedule(
+	body: Partial<PocSchedule>,
+): Promise<PocSchedule> {
+	return putJsonBody<PocSchedule>("/schedule", body);
+}
+
+export async function startSchedule(body?: {
+	focus?: string;
+	interval_seconds?: number;
+	max_credit?: number;
+	universe?: string[];
+	window_start?: string | null;
+	window_end?: string | null;
+}): Promise<PocSchedule> {
+	return postJsonBody<PocSchedule>("/schedule/start", body ?? {});
+}
+
+export async function stopSchedule(): Promise<PocSchedule> {
+	return postJson<PocSchedule>("/schedule/stop");
+}
+
+export type UsageState = "OK" | "WARN" | "OVER";
+
+export type PocApiUsage = {
+	provider: "groq" | "tavily" | "alpaca" | "ddg" | string;
+	used: number;
+	remaining: number | null;
+	limit: number | null;
+	credits?: number;
+	est_cost_usd?: number;
+	reset_ts?: string | null;
+	state: UsageState | string;
+	degrade_level: number;
+	window_id?: string | null;
+};
+
+export type PocApiBudget = {
+	provider: string;
+	scope: "window" | string;
+	limit_type: "tokens" | "credits" | "requests" | "cost" | string;
+	limit_value: number;
+	warn_pct: number;
+	action: "block_degrade" | string;
+};
+
+export async function fetchUsage(): Promise<{ entries: PocApiUsage[] }> {
+	return getJson<{ entries: PocApiUsage[] }>("/usage");
+}
+
+export async function fetchBudgets(): Promise<{ budgets: PocApiBudget[] }> {
+	return getJson<{ budgets: PocApiBudget[] }>("/usage/budgets");
+}
+
+export async function saveBudgets(
+	budgets: PocApiBudget[],
+): Promise<{ budgets: PocApiBudget[] }> {
+	return putJsonBody<{ budgets: PocApiBudget[] }>("/usage/budgets", {
+		budgets,
+	});
 }
 
 export async function fetchAudit(
