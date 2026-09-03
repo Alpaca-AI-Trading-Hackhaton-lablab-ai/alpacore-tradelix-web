@@ -7,13 +7,17 @@ import {
 	ShieldAlert,
 	SlidersHorizontal,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
 	buildDryRunPreview,
+	createConditionalOrder,
+	deleteConditionalOrder,
+	executeBracket,
 	executeOrder,
 	fetchAccount,
 	fetchBars,
+	fetchConditionalOrders,
 	fetchControl,
 	fetchLogs,
 	fetchModels,
@@ -22,13 +26,18 @@ import {
 	fetchSettings,
 	fetchSpyQuote,
 	INDICATOR_OPTIONS,
+	type BracketPreviewOut,
 	type PipelineOpts,
+	type PocBracketPlan,
 	type PocDecision,
 	type PocGate,
 	type PocMarketState,
 	type PocOrderResult,
+	type PocPosition,
 	type PocRisk,
 	type PocSettings,
+	type PocTrigger,
+	previewBracket,
 	saveSettings,
 	setArmed,
 	setKill,
@@ -50,6 +59,7 @@ import {
 import { AgentGraph, type AgentSettings } from "./AgentGraph";
 import { Blotter, type DecisionLogEntry } from "./Blotter";
 import { OptionsDrawer } from "./OptionsDrawer";
+import { OrderTicket } from "./OrderTicket";
 import { PriceChart } from "./PriceChart";
 
 const SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
@@ -128,6 +138,30 @@ export function TradingDashboard() {
 	const hydrated = useRef(false);
 	const skipPersist = useRef(true);
 	const [decisionLog, setDecisionLog] = useState<DecisionLogEntry[]>([]);
+	const [orderPlan, setOrderPlan] = useState<PocBracketPlan | null>(null);
+	const [ticketDirty, setTicketDirty] = useState(false);
+	const [ticketTrigger, setTicketTrigger] = useState<PocTrigger | null>(null);
+	const [ticketPreview, setTicketPreview] = useState<BracketPreviewOut | null>(
+		null,
+	);
+	const [ticketState, setTicketState] = useState<"draft" | "previewed">("draft");
+
+	const handlePlanChange = useCallback(
+		(plan: PocBracketPlan | null, dirty: boolean) => {
+			setOrderPlan(plan);
+			setTicketDirty(dirty);
+			if (dirty) setTicketState("draft");
+		},
+		[],
+	);
+
+	useEffect(() => {
+		setTicketDirty(false);
+		setTicketTrigger(null);
+		setTicketPreview(null);
+		setTicketState("draft");
+		setOrderPlan(null);
+	}, [symbol]);
 
 	const pushLog = (entry: {
 		kind: "DRY_RUN" | "ORDER";
@@ -199,6 +233,11 @@ export function TradingDashboard() {
 		queryFn: () => fetchLogs({ symbol, limit: 40 }),
 		refetchInterval: 10_000,
 	});
+	const conditionalsQuery = useQuery({
+		queryKey: ["conditionals", symbol],
+		queryFn: () => fetchConditionalOrders(symbol),
+		refetchInterval: 10_000,
+	});
 	const catalog = modelsQuery.data;
 	const mergedSettings: AgentSettings = {
 		...settings,
@@ -259,7 +298,15 @@ export function TradingDashboard() {
 	});
 	const kill = useMutation({
 		mutationFn: (enabled: boolean) => setKill(enabled),
-		onSuccess: (state) => queryClient.setQueryData(["control"], state),
+		onSuccess: (state) => {
+			queryClient.setQueryData(["control"], state);
+			void queryClient.invalidateQueries({ queryKey: ["conditionals"] });
+		},
+	});
+	const cancelConditional = useMutation({
+		mutationFn: (id: string) => deleteConditionalOrder(id),
+		onSuccess: () =>
+			queryClient.invalidateQueries({ queryKey: ["conditionals"] }),
 	});
 
 	const refresh = useMutation({
@@ -296,29 +343,86 @@ export function TradingDashboard() {
 	});
 
 	const dryRun = useMutation({
-		mutationFn: async () => {
+		mutationFn: async (): Promise<BracketPreviewOut> => {
+			if (orderPlan) {
+				return previewBracket(orderPlan, ticketTrigger ?? undefined);
+			}
 			const cached = queryClient.getQueryData<PocDecision>([
 				"decision",
 				symbol,
 			]);
 			if (!cached) throw new Error("Run the pipeline first");
-			return cached;
+			return buildDryRunPreview(
+				cached,
+				marketQuery.data?.price ?? quoteQuery.data?.price,
+				marketQuery.data?.atr,
+			);
 		},
-		onSuccess: (decision) => {
-			const preview = buildDryRunPreview(decision);
+		onSuccess: (preview) => {
+			setTicketPreview(preview);
+			setTicketState("previewed");
+			const decision = preview.decision;
 			pushLog({
 				kind: "DRY_RUN",
-				symbol: decision.symbol,
-				action: decision.action,
+				symbol: decision?.symbol ?? symbol,
+				action: decision?.action ?? orderPlan?.side.toUpperCase() ?? "—",
 				status: preview.status,
-				size: decision.position_size,
+				size: decision?.position_size ?? orderPlan?.size.notional ?? 0,
 			});
-			queryClient.setQueryData(["decision", symbol], decision);
+			if (decision) {
+				queryClient.setQueryData(["decision", symbol], decision);
+			}
 		},
 	});
 
 	const execute = useMutation({
-		mutationFn: () => executeOrder(symbol, pipelineOpts),
+		mutationFn: async (): Promise<PocOrderResult> => {
+			if (ticketDirty && orderPlan) {
+				if (ticketTrigger) {
+					const created = await createConditionalOrder({
+						plan: orderPlan,
+						trigger: ticketTrigger,
+					});
+					if (!("id" in created) || !created.id) {
+						const blocked = created as {
+							status?: string;
+							errors?: string[];
+							gate?: PocGate;
+						};
+						const blockedOut: PocOrderResult = {
+							status: blocked.status ?? "BLOCKED",
+							reason: blocked.errors?.[0] ?? "conditional rejected",
+							decision: {
+								symbol: orderPlan.symbol,
+								action: orderPlan.side === "buy" ? "BUY" : "SELL",
+								position_size: orderPlan.size.notional ?? 0,
+								technical_signal: "",
+								sentiment: "",
+								risk_level: "",
+							},
+						};
+						if (blocked.gate) blockedOut.gate = blocked.gate;
+						return blockedOut;
+					}
+					await queryClient.invalidateQueries({ queryKey: ["conditionals"] });
+					const armed: PocOrderResult = {
+						status: created.status?.toUpperCase() ?? "ARMED",
+						reason: "Conditional armed — not sent to Alpaca",
+						decision: {
+							symbol: created.plan.symbol,
+							action: created.plan.side === "buy" ? "BUY" : "SELL",
+							position_size: created.plan.size.notional ?? 0,
+							technical_signal: "",
+							sentiment: "",
+							risk_level: "",
+						},
+					};
+					return armed;
+				}
+				return executeBracket(orderPlan);
+			}
+			return executeOrder(symbol, pipelineOpts);
+		},
 		onSuccess: async (result) => {
 			setOrderResult(result);
 			pushLog({
@@ -332,6 +436,7 @@ export function TradingDashboard() {
 			await queryClient.invalidateQueries({ queryKey: ["positions"] });
 			await queryClient.invalidateQueries({ queryKey: ["account"] });
 			await queryClient.invalidateQueries({ queryKey: ["logs"] });
+			await queryClient.invalidateQueries({ queryKey: ["conditionals"] });
 			if (
 				result.order_id &&
 				["SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED"].includes(result.status)
@@ -499,14 +604,28 @@ export function TradingDashboard() {
 				<Card className="min-w-0 lg:col-span-2">
 					<CardContent className="pt-5">
 						<CardTitle className="mb-3">Price</CardTitle>
-						<PriceChart symbol={symbol} bars={barsQuery.data} />
+						<PriceChart
+							symbol={symbol}
+							bars={barsQuery.data}
+							bullishOb={market?.bullish_ob}
+							bearishOb={market?.bearish_ob}
+							orderPlan={orderPlan}
+							onPlanChange={(plan) => handlePlanChange(plan, true)}
+						/>
 						<dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-muted-foreground sm:grid-cols-3">
 							<Row label="Trend" value={market?.trend ?? "—"} />
+							<Row label="EMA trend" value={market?.ema_trend ?? "—"} />
 							<Row label="RSI" value={formatNumber(market?.rsi, 1)} />
+							<Row label="RSI3" value={formatNumber(market?.rsi3, 1)} />
 							<Row label="SMA 20" value={formatNumber(market?.sma20, 2)} />
 							<Row label="SMA 50" value={formatNumber(market?.sma50, 2)} />
 							<Row label="EMA 20" value={formatNumber(market?.ema20, 2)} />
 							<Row label="Signal" value={market?.technical_signal ?? "—"} />
+							<Row label="Order block" value={formatOrderBlock(market)} />
+							<Row
+								label="Institutional"
+								value={market?.institutional_signal ?? "—"}
+							/>
 						</dl>
 					</CardContent>
 				</Card>
@@ -514,10 +633,22 @@ export function TradingDashboard() {
 				<DecisionRail
 					symbol={symbol}
 					decision={decision}
-					gate={gate}
+					gate={gate ?? ticketPreview?.gate}
 					market={market}
 					risk={risk}
 					account={account}
+					plan={orderPlan}
+					dirty={ticketDirty}
+					onPlanChange={handlePlanChange}
+					trigger={ticketTrigger}
+					onTriggerChange={setTicketTrigger}
+					preview={ticketPreview}
+					ticketState={ticketState}
+					onDryRun={() => dryRun.mutate()}
+					dryRunPending={dryRun.isPending}
+					position={positions.find((p) => p.symbol === symbol)}
+					lastPrice={market?.price ?? quote?.price}
+					atr={market?.atr}
 				/>
 
 				<Blotter
@@ -527,6 +658,8 @@ export function TradingDashboard() {
 					control={control}
 					invocations={logsQuery.data?.entries ?? []}
 					decisionLog={decisionLog}
+					conditionals={conditionalsQuery.data?.orders ?? []}
+					onCancelConditional={(id) => cancelConditional.mutate(id)}
 				/>
 
 				{isLoading ? (
@@ -560,6 +693,18 @@ function DecisionRail({
 	market,
 	risk,
 	account,
+	plan,
+	dirty,
+	onPlanChange,
+	trigger,
+	onTriggerChange,
+	preview,
+	ticketState,
+	onDryRun,
+	dryRunPending,
+	position,
+	lastPrice,
+	atr,
 }: {
 	symbol: string;
 	decision: PocDecision | undefined;
@@ -567,6 +712,18 @@ function DecisionRail({
 	market: PocMarketState | undefined;
 	risk: PocRisk | undefined;
 	account: { cash?: string | number; status?: string } | undefined;
+	plan: PocBracketPlan | null;
+	dirty: boolean;
+	onPlanChange: (plan: PocBracketPlan | null, dirty: boolean) => void;
+	trigger: PocTrigger | null;
+	onTriggerChange: (trigger: PocTrigger | null) => void;
+	preview: BracketPreviewOut | null;
+	ticketState: "draft" | "previewed";
+	onDryRun: () => void;
+	dryRunPending?: boolean | undefined;
+	position: PocPosition | undefined;
+	lastPrice: number | undefined;
+	atr: number | undefined;
 }) {
 	return (
 		<Card className="min-w-0 lg:col-span-1">
@@ -593,6 +750,12 @@ function DecisionRail({
 					{decision?.confidence != null ? (
 						<p className="mt-1 text-xs text-muted-foreground">
 							Confidence {formatNumber(decision.confidence, 0)}%
+						</p>
+					) : null}
+					{decision?.scores ? (
+						<p className="mt-1 text-xs text-muted-foreground">
+							Score buy {formatNumber(decision.scores.buy, 1)} / sell{" "}
+							{formatNumber(decision.scores.sell, 1)}
 						</p>
 					) : null}
 				</div>
@@ -664,9 +827,47 @@ function DecisionRail({
 						<Row label="Status" value={account?.status ?? "—"} />
 					</div>
 				</dl>
+
+				<OrderTicket
+					symbol={symbol}
+					decision={decision}
+					lastPrice={lastPrice}
+					atr={atr}
+					position={position}
+					plan={plan}
+					dirty={dirty}
+					onPlanChange={onPlanChange}
+					trigger={trigger}
+					onTriggerChange={onTriggerChange}
+					preview={preview}
+					ticketState={ticketState}
+					onDryRun={onDryRun}
+					dryRunPending={dryRunPending}
+				/>
 			</CardContent>
 		</Card>
 	);
+}
+
+function formatOrderBlock(market: PocMarketState | undefined): string {
+	if (!market) return "—";
+	const parts: string[] = [];
+	if (market.bullish_ob?.price != null) {
+		const near = market.near_bullish ? "near " : "";
+		const level = market.bullish_ob.level ? ` ${market.bullish_ob.level}` : "";
+		parts.push(`${near}${market.bullish_ob.price}${level}`);
+	}
+	if (market.bearish_ob?.price != null) {
+		const near = market.near_bearish ? "near " : "";
+		const level = market.bearish_ob.level ? ` ${market.bearish_ob.level}` : "";
+		parts.push(`${near}${market.bearish_ob.price}${level}`);
+	}
+	if (parts.length === 0) {
+		if (market.near_bullish) return "near bullish";
+		if (market.near_bearish) return "near bearish";
+		return "—";
+	}
+	return parts.join(" · ");
 }
 
 function TickerStat({ label, value }: { label: string; value: string }) {

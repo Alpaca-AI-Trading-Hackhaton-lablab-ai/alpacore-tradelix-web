@@ -1,10 +1,12 @@
 import { Rocket, ScrollText } from "lucide-react";
 import { useState } from "react";
 import type {
+	PocConditionalOrder,
 	PocControl,
 	PocInvocation,
 	PocOrderResult,
 	PocPosition,
+	WouldCall,
 } from "@/api/market-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -33,11 +35,12 @@ export type DecisionLogEntry = {
 	verdict?: string;
 };
 
-type Tab = "positions" | "execution" | "invocations" | "log";
+type Tab = "positions" | "execution" | "conditionals" | "invocations" | "log";
 
 const TABS: { id: Tab; label: string }[] = [
 	{ id: "positions", label: "Positions" },
 	{ id: "execution", label: "Execution" },
+	{ id: "conditionals", label: "Conditional Orders" },
 	{ id: "invocations", label: "Invocations" },
 	{ id: "log", label: "Decision Log" },
 ];
@@ -49,6 +52,8 @@ export function Blotter({
 	control,
 	invocations,
 	decisionLog,
+	conditionals,
+	onCancelConditional,
 }: {
 	symbol: string;
 	positions: PocPosition[];
@@ -56,6 +61,8 @@ export function Blotter({
 	control: PocControl | undefined;
 	invocations: PocInvocation[];
 	decisionLog: DecisionLogEntry[];
+	conditionals: PocConditionalOrder[];
+	onCancelConditional?: ((id: string) => void) | undefined;
 }) {
 	const [tab, setTab] = useState<Tab>("positions");
 
@@ -90,6 +97,12 @@ export function Blotter({
 						positions={positions}
 						orderResult={orderResult}
 						control={control}
+					/>
+				) : null}
+				{tab === "conditionals" ? (
+					<ConditionalsTable
+						orders={conditionals}
+						onCancel={onCancelConditional}
 					/>
 				) : null}
 				{tab === "invocations" ? (
@@ -225,7 +238,103 @@ function ExecutionPanel({
 					broker.
 				</p>
 			) : null}
+			<WouldCallList calls={asWouldCallList(orderResult?.would_call)} />
 		</div>
+	);
+}
+
+function asWouldCallList(
+	value: PocOrderResult["would_call"],
+): WouldCall[] {
+	if (!value) return [];
+	return Array.isArray(value) ? value : [value];
+}
+
+function WouldCallList({ calls }: { calls: WouldCall[] }) {
+	if (calls.length === 0) return null;
+	return (
+		<ol className="mt-4 space-y-1 font-mono text-[11px] text-muted-foreground">
+			{calls.map((call, i) => (
+				<li key={`${call.order_class ?? call.type}-${i}`}>
+					{i + 1}. {call.order_class ?? call.type ?? call.tool}
+					{call.emulated ? " (emulated)" : ""}
+					{call.notional != null ? ` · $${call.notional}` : ""}
+					{call.take_profit?.limit_price != null
+						? ` · TP ${call.take_profit.limit_price}`
+						: ""}
+					{call.stop_loss?.stop_price != null
+						? ` · SL ${call.stop_loss.stop_price}`
+						: ""}
+				</li>
+			))}
+		</ol>
+	);
+}
+
+function ConditionalsTable({
+	orders,
+	onCancel,
+}: {
+	orders: PocConditionalOrder[];
+	onCancel?: ((id: string) => void) | undefined;
+}) {
+	return (
+		<Table>
+			<TableHeader>
+				<TableRow>
+					<TableHead>Status</TableHead>
+					<TableHead>Symbol</TableHead>
+					<TableHead>Trigger</TableHead>
+					<TableHead>Side</TableHead>
+					<TableHead>Size</TableHead>
+					<TableHead>Created</TableHead>
+					<TableHead />
+				</TableRow>
+			</TableHeader>
+			<TableBody>
+				{orders.map((row) => (
+					<TableRow key={row.id}>
+						<TableCell>
+							<span className={orderStatusClass(row.status.toUpperCase())}>
+								{row.status}
+							</span>
+						</TableCell>
+						<TableCell>{row.symbol ?? row.plan.symbol}</TableCell>
+						<TableCell className="font-mono text-xs">
+							{row.trigger.kind === "price"
+								? `${row.trigger.op} ${row.trigger.price}`
+								: `webhook · ${row.trigger.token_source}`}
+						</TableCell>
+						<TableCell>{row.plan.side}</TableCell>
+						<TableCell>{formatMoney(row.plan.size.notional)}</TableCell>
+						<TableCell>
+							{row.created_ts
+								? new Date(row.created_ts).toLocaleString()
+								: "—"}
+						</TableCell>
+						<TableCell>
+							{row.status === "armed" || row.status === "working" ? (
+								<button
+									type="button"
+									className="text-xs text-short"
+									onClick={() => onCancel?.(row.id)}
+								>
+									Cancel
+								</button>
+							) : null}
+						</TableCell>
+					</TableRow>
+				))}
+				{orders.length === 0 && (
+					<TableRow>
+						<TableCell colSpan={7} className="py-4 text-muted-foreground">
+							No conditional orders. Arm a price or webhook trigger from the
+							ticket.
+						</TableCell>
+					</TableRow>
+				)}
+			</TableBody>
+		</Table>
 	);
 }
 

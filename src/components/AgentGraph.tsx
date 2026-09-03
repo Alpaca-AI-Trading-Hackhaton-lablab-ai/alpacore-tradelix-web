@@ -6,6 +6,8 @@ import {
 	Gauge,
 	Gavel,
 	GitBranch,
+	Landmark,
+	Layers,
 	Newspaper,
 	Play,
 	Rocket,
@@ -35,44 +37,35 @@ import { Card, CardContent } from "@/components/ui/card";
 type NodeDef = {
 	id: string;
 	label: string;
+	title: string;
 	icon: ComponentType<{ className?: string }>;
-	col: number;
-	row: number;
 };
 
+/** Topological order: PIPELINE_KEYS + execution. */
 const NODES: NodeDef[] = [
-	{ id: "news", label: "News", icon: Newspaper, col: 0, row: 0 },
-	{ id: "features", label: "Features", icon: Activity, col: 0, row: 1 },
+	{ id: "news", label: "News", title: "News", icon: Newspaper },
+	{ id: "sentiment", label: "Sentiment", title: "Sentiment", icon: Brain },
+	{ id: "options", label: "Options", title: "Options", icon: GitBranch },
+	{ id: "features", label: "Features", title: "Features", icon: Activity },
 	{
 		id: "technical",
 		label: "Technical",
+		title: "Technical",
 		icon: CandlestickChart,
-		col: 0,
-		row: 2,
 	},
-	{ id: "account", label: "Account", icon: Wallet, col: 0, row: 3 },
-	{ id: "sentiment", label: "Sentiment", icon: Brain, col: 1, row: 0 },
-	{ id: "options", label: "Options", icon: GitBranch, col: 2, row: 0 },
-	{ id: "risk", label: "Risk", icon: ShieldCheck, col: 2, row: 3 },
-	{ id: "market_state", label: "Market State", icon: Gauge, col: 3, row: 1 },
-	{ id: "decision", label: "Decision", icon: Gavel, col: 4, row: 2 },
-	{ id: "gate", label: "Gate", icon: ShieldAlert, col: 5, row: 2 },
-	{ id: "execution", label: "Execution", icon: Rocket, col: 6, row: 2 },
-];
-
-const EDGES: [string, string][] = [
-	["news", "sentiment"],
-	["sentiment", "options"],
-	["sentiment", "risk"],
-	["account", "risk"],
-	["sentiment", "market_state"],
-	["options", "market_state"],
-	["features", "market_state"],
-	["technical", "market_state"],
-	["market_state", "decision"],
-	["risk", "decision"],
-	["decision", "gate"],
-	["gate", "execution"],
+	{ id: "orderblock", label: "OB", title: "Order Block", icon: Layers },
+	{
+		id: "institutional",
+		label: "Flow",
+		title: "Institutional",
+		icon: Landmark,
+	},
+	{ id: "market_state", label: "State", title: "Market State", icon: Gauge },
+	{ id: "account", label: "Account", title: "Account", icon: Wallet },
+	{ id: "risk", label: "Risk", title: "Risk", icon: ShieldCheck },
+	{ id: "decision", label: "Decision", title: "Decision", icon: Gavel },
+	{ id: "gate", label: "Gate", title: "Gate", icon: ShieldAlert },
+	{ id: "execution", label: "Exec", title: "Execution", icon: Rocket },
 ];
 
 type NodeKind = "llm" | "indicators" | "locked";
@@ -99,17 +92,30 @@ const NODE_META: Record<
 	features: {
 		kind: "indicators",
 		role: "deterministic",
-		blurb: "Same pandas engine as technical. No LLM.",
+		blurb: "Same pandas engine as technical. Hourly bars. No LLM.",
 	},
 	technical: {
 		kind: "indicators",
 		role: "deterministic",
-		blurb: "RSI/SMA/MACD computed in Python. The LLM does not calculate them.",
+		blurb:
+			"EMA 3/10/50/100 and RSI3 on 1Hour bars. SMA/MACD/ATR stay. No LLM math.",
+	},
+	orderblock: {
+		kind: "locked",
+		role: "deterministic",
+		blurb:
+			"Daily order block: last opposing candle before a 1.5× range impulse.",
+	},
+	institutional: {
+		kind: "locked",
+		role: "deterministic",
+		blurb: "Hourly volume vs SMA20 + accumulation/distribution. No tick tape.",
 	},
 	market_state: {
 		kind: "locked",
 		role: "deterministic",
-		blurb: "Merges sentiment, options, features, and technical.",
+		blurb:
+			"Merges sentiment, options, features, technical, order blocks, and flow.",
 	},
 	account: {
 		kind: "locked",
@@ -124,7 +130,8 @@ const NODE_META: Record<
 	decision: {
 		kind: "llm",
 		role: "LLM",
-		blurb: "Interprets the snapshot. Deep mode may look up unknown concepts.",
+		blurb:
+			"Scored setup (EMA/RSI3/OB/flow). Deep mode may look up unknown concepts.",
 	},
 	gate: {
 		kind: "locked",
@@ -137,20 +144,6 @@ const NODE_META: Record<
 		blurb: "Broker submit after ALLOW + arm. Not part of the SSE graph.",
 	},
 };
-
-const W = 158;
-const H = 66;
-const HGAP = 46;
-const VGAP = 30;
-const PAD = 14;
-const CANVAS_W = PAD * 2 + 7 * W + 6 * HGAP;
-const CANVAS_H = PAD * 2 + 4 * H + 3 * VGAP;
-
-function pos(node: NodeDef) {
-	const left = PAD + node.col * (W + HGAP);
-	const top = PAD + node.row * (H + VGAP);
-	return { left, top, right: left + W, midY: top + H / 2 };
-}
 
 type NodeState = { status: PocNodeStatus; message?: string | null };
 
@@ -292,6 +285,7 @@ export function AgentGraph({
 		id === "execution" ? execState : (states[id] ?? { status: "idle" });
 
 	const deepOn = settings.deepSentiment || settings.deepDecision;
+	const selectedDef = NODES.find((n) => n.id === selected);
 	const meta = selected ? NODE_META[selected] : null;
 	const stSelected = selected ? stateOf(selected) : null;
 	const nodeReact = selected
@@ -328,169 +322,131 @@ export function AgentGraph({
 					</div>
 				</div>
 
-				<div className="flex flex-col gap-4 xl:flex-row">
-					<div className="min-w-0 flex-1 overflow-x-auto">
-						<div
-							className="relative"
-							style={{ width: CANVAS_W, height: CANVAS_H }}
-						>
-							<svg
-								className="pointer-events-none absolute inset-0"
-								width={CANVAS_W}
-								height={CANVAS_H}
-								aria-hidden="true"
-							>
-								<title>Agent graph edges</title>
-								{EDGES.map(([from, to]) => {
-									const a = NODES.find((n) => n.id === from);
-									const b = NODES.find((n) => n.id === to);
-									if (!a || !b) return null;
-									const pa = pos(a);
-									const pb = pos(b);
-									const sx = pa.right;
-									const sy = pa.midY;
-									const tx = pb.left;
-									const ty = pb.midY;
-									const dx = Math.max(40, (tx - sx) * 0.5);
-									const d = `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
-									const sFrom = stateOf(from).status;
-									const sTo = stateOf(to).status;
-									const active = sTo === "running";
-									const done = sFrom === "done" && sTo === "done";
-									const stroke = active
-										? "var(--gold)"
-										: done
-											? "var(--long)"
-											: "var(--border)";
-									return (
-										<path
-											key={`${from}-${to}`}
-											d={d}
-											fill="none"
-											stroke={stroke}
-											strokeWidth={active ? 2 : 1.5}
-											strokeOpacity={active || done ? 0.9 : 0.5}
-											className={active ? "edge-flow" : ""}
+				<ol className="relative m-0 list-none space-y-0 p-0">
+					{NODES.map((node, index) => {
+						const st = stateOf(node.id);
+						const Icon = node.icon;
+						const isSel = selected === node.id;
+						const next = NODES[index + 1];
+						const nextSt = next ? stateOf(next.id).status : "idle";
+						const railOn =
+							st.status === "done" &&
+							(nextSt === "done" || nextSt === "running");
+						const railActive = nextSt === "running";
+						return (
+							<li key={node.id} className="relative flex gap-3">
+								<div className="flex w-4 shrink-0 flex-col items-center">
+									<span
+										className={`mt-2 size-2.5 shrink-0 rounded-full ${STATUS_DOT[st.status]}`}
+									/>
+									{next ? (
+										<span
+											className={`min-h-6 w-px flex-1 ${
+												railActive
+													? "bg-gold"
+													: railOn
+														? "bg-long"
+														: "bg-border"
+											}`}
 										/>
-									);
-								})}
-							</svg>
-
-							{NODES.map((node) => {
-								const st = stateOf(node.id);
-								const Icon = node.icon;
-								const p = pos(node);
-								const isSel = selected === node.id;
-								return (
-									<button
-										key={node.id}
-										type="button"
-										onClick={() =>
-											setSelected((cur) => (cur === node.id ? null : node.id))
-										}
-										className={`absolute rounded-md border bg-background/60 p-2 text-left transition hover:border-gold/60 ${
-											st.status === "running"
-												? "node-running border-node-running"
-												: ""
-										} ${isSel ? "ring-2 ring-gold/70" : ""}`}
-										style={{
-											left: p.left,
-											top: p.top,
-											width: W,
-											height: H,
-										}}
-									>
-										<div className="flex items-center gap-1.5">
-											<Icon className="size-3.5 text-muted-foreground" />
-											<span className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
-												{node.label}
-											</span>
-											<span
-												className={`ml-auto size-2 rounded-full ${STATUS_DOT[st.status]}`}
-											/>
-										</div>
-										<p className="mt-1 line-clamp-2 text-[10px] leading-tight text-muted-foreground">
-											{st.message ?? (st.status === "idle" ? "—" : st.status)}
-										</p>
-									</button>
-								);
-							})}
-						</div>
-					</div>
-
-					{selected && meta ? (
-						<aside className="w-full shrink-0 rounded-md border border-border/70 bg-muted/20 p-4 xl:w-80">
-							<div className="mb-3 flex items-start justify-between gap-2">
-								<div>
-									<h3 className="text-sm font-semibold uppercase tracking-wide">
-										{NODES.find((n) => n.id === selected)?.label}
-									</h3>
-									<p
-										className={`text-[10px] font-semibold uppercase ${
-											meta.role === "LLM"
-												? "text-gold"
-												: "text-muted-foreground"
-										}`}
-									>
-										{meta.role}
-									</p>
+									) : null}
 								</div>
 								<button
 									type="button"
-									onClick={() => setSelected(null)}
-									className="text-muted-foreground hover:text-foreground"
-									aria-label="Close inspector"
+									onClick={() =>
+										setSelected((cur) => (cur === node.id ? null : node.id))
+									}
+									className={`mb-1.5 min-w-0 flex-1 rounded-md border bg-background/60 px-2 py-1.5 text-left transition hover:border-gold/60 ${
+										st.status === "running"
+											? "node-running border-node-running"
+											: ""
+									} ${isSel ? "ring-2 ring-gold/70" : ""}`}
 								>
-									<X className="size-4" />
+									<div className="flex items-center gap-1.5">
+										<Icon className="size-3.5 shrink-0 text-muted-foreground" />
+										<span className="truncate text-[11px] font-semibold uppercase tracking-wide text-foreground">
+											{node.label}
+										</span>
+									</div>
+									<p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+										{st.message ?? (st.status === "idle" ? "—" : st.status)}
+									</p>
 								</button>
+							</li>
+						);
+					})}
+				</ol>
+
+				{selected && meta && selectedDef ? (
+					<aside className="mt-3 rounded-md border border-border/70 bg-muted/20 p-3">
+						<div className="mb-2 flex items-start justify-between gap-2">
+							<div>
+								<h3 className="text-sm font-semibold uppercase tracking-wide">
+									{selectedDef.title}
+								</h3>
+								<p
+									className={`text-[10px] font-semibold uppercase ${
+										meta.role === "LLM" ? "text-gold" : "text-muted-foreground"
+									}`}
+								>
+									{meta.role}
+								</p>
 							</div>
-							<p className="mb-4 text-xs text-muted-foreground">{meta.blurb}</p>
-							{stSelected ? (
-								<p className="mb-3 font-mono text-xs text-foreground">
-									{stSelected.message ?? stSelected.status}
-								</p>
-							) : null}
-							{meta.kind === "locked" ? (
-								<p className="text-xs text-muted-foreground">
-									Not configurable. Architecture stays deterministic here.
-								</p>
-							) : (
-								<p className="text-xs text-muted-foreground">
-									Configure models, Deep, and indicators in Options.
-								</p>
-							)}
-							{nodeReact.length > 0 ? (
-								<div className="mt-3 max-h-32 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-									{nodeReact.map((turn) => (
-										<div key={turn.id} className="mb-1.5">
-											<span className="text-foreground">
-												#{(turn.turn ?? 0) + 1}
-											</span>
-											{turn.tool ? (
-												<span className="text-gold"> · {turn.tool}</span>
-											) : null}
-											{turn.thought ? (
-												<div className="line-clamp-2 pl-2">{turn.thought}</div>
-											) : null}
-											{turn.observation ? (
-												<div className="line-clamp-2 pl-2 text-muted-foreground/80">
-													obs: {turn.observation}
-												</div>
-											) : null}
-										</div>
-									))}
-								</div>
-							) : null}
-						</aside>
-					) : (
-						<p className="text-xs text-muted-foreground xl:w-56">
-							Click an agent to inspect output or ReAct.
-						</p>
-					)}
-				</div>
+							<button
+								type="button"
+								onClick={() => setSelected(null)}
+								className="text-muted-foreground hover:text-foreground"
+								aria-label="Close inspector"
+							>
+								<X className="size-4" />
+							</button>
+						</div>
+						<p className="mb-3 text-xs text-muted-foreground">{meta.blurb}</p>
+						{stSelected ? (
+							<p className="mb-2 font-mono text-xs text-foreground">
+								{stSelected.message ?? stSelected.status}
+							</p>
+						) : null}
+						{meta.kind === "locked" ? (
+							<p className="text-xs text-muted-foreground">
+								Not configurable. Architecture stays deterministic here.
+							</p>
+						) : (
+							<p className="text-xs text-muted-foreground">
+								Configure models, Deep, and indicators in Options.
+							</p>
+						)}
+						{nodeReact.length > 0 ? (
+							<div className="mt-3 max-h-32 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+								{nodeReact.map((turn) => (
+									<div key={turn.id} className="mb-1.5">
+										<span className="text-foreground">
+											#{(turn.turn ?? 0) + 1}
+										</span>
+										{turn.tool ? (
+											<span className="text-gold"> · {turn.tool}</span>
+										) : null}
+										{turn.thought ? (
+											<div className="line-clamp-2 pl-2">{turn.thought}</div>
+										) : null}
+										{turn.observation ? (
+											<div className="line-clamp-2 pl-2 text-muted-foreground/80">
+												obs: {turn.observation}
+											</div>
+										) : null}
+									</div>
+								))}
+							</div>
+						) : null}
+					</aside>
+				) : (
+					<p className="mt-3 text-xs text-muted-foreground">
+						Click an agent to inspect output or ReAct.
+					</p>
+				)}
 
 				{reactLog.length > 0 ? (
-					<div className="mt-4 max-h-40 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+					<div className="mt-3 max-h-40 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
 						{reactLog.map((turn) => (
 							<div key={turn.id} className="mb-1.5">
 								<span className="text-foreground">

@@ -40,14 +40,25 @@ export function classifyStatus(status: string | undefined): string {
 
 export function orderStatusClass(status: string | undefined): string {
 	const base = "text-sm font-semibold";
-	if (status === "FILLED") return `${base} text-long`;
-	if (status === "REJECTED" || status === "FAILED" || status === "BLOCKED")
+	const s = (status ?? "").toUpperCase();
+	if (s === "FILLED" || s === "DONE" || s === "BE_MOVED") return `${base} text-long`;
+	if (
+		s === "REJECTED" ||
+		s === "FAILED" ||
+		s === "BLOCKED" ||
+		s === "CANCELLED" ||
+		s === "EXPIRED"
+	)
 		return `${base} text-short`;
 	if (
-		status === "SUBMITTED" ||
-		status === "ACCEPTED" ||
-		status === "PARTIALLY_FILLED" ||
-		status === "DRY_RUN"
+		s === "SUBMITTED" ||
+		s === "ACCEPTED" ||
+		s === "PARTIALLY_FILLED" ||
+		s === "DRY_RUN" ||
+		s === "ARMED" ||
+		s === "WORKING" ||
+		s === "TRIGGERED" ||
+		s === "PREVIEWED"
 	)
 		return `${base} text-gold`;
 	return `${base} text-muted-foreground`;

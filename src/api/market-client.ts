@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { buildWouldCall, seedPlan } from "../lib/order-plan";
 
 export type PocMarketState = {
 	symbol: string;
@@ -6,15 +7,40 @@ export type PocMarketState = {
 	confidence: number;
 	trade_bias: "CALL" | "PUT" | "WAIT" | string;
 	trend: string;
+	ema_trend?: string;
 	price: number;
 	rsi: number;
+	rsi3?: number;
+	rsi_signal?: string;
 	sma20: number;
 	sma50: number;
+	ema3?: number;
+	ema10?: number;
 	ema20?: number;
+	ema50?: number;
+	ema100?: number;
 	macd?: number;
 	atr?: number;
 	technical_signal: "BUY" | "SELL" | "HOLD" | string;
 	option_strategy: string;
+	near_bullish?: boolean;
+	near_bearish?: boolean;
+	bullish_ob?: {
+		price?: number | null;
+		level?: string;
+		low?: number | null;
+		high?: number | null;
+	} | null;
+	bearish_ob?: {
+		price?: number | null;
+		level?: string;
+		low?: number | null;
+		high?: number | null;
+	} | null;
+	institutional_signal?: string;
+	smart_money_buying?: boolean;
+	smart_money_selling?: boolean;
+	ad_line_trend?: string;
 };
 
 export type PocRisk = {
@@ -24,6 +50,73 @@ export type PocRisk = {
 	position_size: number;
 	max_loss: number;
 	take_profit: number;
+	stop_loss?: number;
+	break_even?: number;
+	r_multiple?: number;
+};
+
+export type PocTrigger =
+	| { kind: "price"; op: ">=" | "<="; price: number }
+	| { kind: "webhook"; token_source: "db" | "env" | "missing" };
+
+export type PocOrderLeg = {
+	role: "entry" | "tp" | "sl" | "be";
+	type: "market" | "limit" | "stop" | "stop_limit" | "trailing_stop";
+	price?: number;
+	size_pct?: number;
+	trailing_distance?: number;
+	trailing_distance_pct?: number;
+	trailing_start?: PocTrigger;
+	improve_only?: boolean;
+	mode?: "fixed" | "trailing" | "follow_tp" | string;
+};
+
+export type PocBracketPlan = {
+	symbol: string;
+	side: "buy" | "sell";
+	size: { notional?: number; qty?: number };
+	entry: PocOrderLeg;
+	tps: PocOrderLeg[];
+	sl?: PocOrderLeg;
+	break_even?: { on: "tp1_fill" | "price"; price?: number; fees_frac: number };
+};
+
+export type PocConditionalOrder = {
+	id: string;
+	symbol?: string;
+	status:
+		| "armed"
+		| "triggered"
+		| "working"
+		| "done"
+		| "cancelled"
+		| "expired"
+		| "be_moved"
+		| string;
+	trigger: PocTrigger;
+	plan: PocBracketPlan;
+	created_ts: string;
+	triggered_ts?: string | null;
+	webhook_token?: string;
+};
+
+export type WouldCall = {
+	tool: "place_stock_order";
+	order_class?: string;
+	type?: string;
+	symbol?: string;
+	side?: "buy" | "sell" | string;
+	notional?: number;
+	notional_position_size?: number;
+	entry?: string;
+	take_profit?: { limit_price?: number };
+	stop_loss?: { stop_price?: number };
+	limit_price?: number;
+	qty?: string | number;
+	size_pct?: number;
+	trail_percent?: number;
+	emulated?: boolean;
+	[key: string]: unknown;
 };
 
 export type PocDecision = {
@@ -37,6 +130,8 @@ export type PocDecision = {
 	confidence?: number;
 	model?: string;
 	error?: string;
+	scores?: { buy: number; sell: number };
+	signals?: Record<string, string | undefined>;
 };
 
 export type PocGateCheck = {
@@ -109,6 +204,7 @@ export type PocOrderResult = {
 	decision?: PocDecision;
 	gate?: PocGate;
 	error?: string;
+	would_call?: WouldCall[] | WouldCall | null;
 };
 
 export type PocPosition = {
@@ -194,8 +290,13 @@ export type PocBars = {
 export const INDICATOR_OPTIONS = [
 	{ id: "sma20", label: "SMA 20" },
 	{ id: "sma50", label: "SMA 50" },
+	{ id: "ema3", label: "EMA 3" },
+	{ id: "ema10", label: "EMA 10" },
 	{ id: "ema20", label: "EMA 20" },
+	{ id: "ema50", label: "EMA 50" },
+	{ id: "ema100", label: "EMA 100" },
 	{ id: "rsi", label: "RSI 14" },
+	{ id: "rsi3", label: "RSI 3" },
 	{ id: "macd", label: "MACD" },
 	{ id: "volume", label: "Volume" },
 	{ id: "atr", label: "ATR 14" },
@@ -209,6 +310,8 @@ export type PocPipeline = {
 	options?: unknown;
 	features?: unknown;
 	technical?: unknown;
+	orderblock?: unknown;
+	institutional?: unknown;
 	market_state?: PocMarketState;
 	account?: PocAccount;
 	risk?: PocRisk;
@@ -217,15 +320,17 @@ export type PocPipeline = {
 };
 
 export type DryRunPreview = {
-	status: "DRY_RUN" | "NO_TRADE";
+	status: "DRY_RUN" | "NO_TRADE" | "BLOCKED";
 	reason: string;
-	would_call: null | {
-		tool: "place_stock_order";
-		symbol: string;
-		side: "buy" | "sell";
-		notional_position_size: number;
-	};
+	would_call: WouldCall[] | null;
 	decision: PocDecision;
+	risk?: {
+		r_multiple?: number | null;
+		max_loss?: number | null;
+		break_even?: string | null;
+	};
+	conditional?: PocTrigger;
+	errors?: string[];
 };
 
 const base = () => env.VITE_API_URL.replace(/\/$/, "");
@@ -259,6 +364,19 @@ async function postJson<T>(path: string): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
+async function postJsonBody<T>(path: string, body: unknown): Promise<T> {
+	const res = await fetch(`${base()}${path}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => "");
+		throw new Error(`${path} ${res.status}${detail ? `: ${detail}` : ""}`);
+	}
+	return res.json() as Promise<T>;
+}
+
 export async function fetchMarketState(
 	symbol: string,
 ): Promise<PocMarketState> {
@@ -286,6 +404,56 @@ export async function executeOrder(
 	opts?: PipelineOpts,
 ): Promise<PocOrderResult> {
 	return postJson<PocOrderResult>(withQuery("/execute", symbol, opts));
+}
+
+export type BracketPreviewOut = DryRunPreview & {
+	ok?: boolean;
+	r_multiple?: number | null;
+	max_loss?: number | null;
+	break_even?: number | null;
+	gate?: PocGate;
+};
+
+export async function previewBracket(
+	plan: PocBracketPlan,
+	trigger?: PocTrigger,
+): Promise<BracketPreviewOut> {
+	return postJsonBody<BracketPreviewOut>("/bracket/preview", { plan, trigger });
+}
+
+export async function executeBracket(
+	plan: PocBracketPlan,
+): Promise<PocOrderResult> {
+	return postJsonBody<PocOrderResult>("/bracket/execute", { plan });
+}
+
+export async function fetchConditionalOrders(
+	symbol?: string,
+): Promise<{ orders: PocConditionalOrder[] }> {
+	const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+	return getJson<{ orders: PocConditionalOrder[] }>(`/conditional-orders${q}`);
+}
+
+export async function createConditionalOrder(body: {
+	plan: PocBracketPlan;
+	trigger: PocTrigger;
+}): Promise<
+	PocConditionalOrder | { status?: string; errors?: string[]; gate?: PocGate }
+> {
+	return postJsonBody<
+		PocConditionalOrder | { status?: string; errors?: string[]; gate?: PocGate }
+	>("/conditional-orders", body);
+}
+
+export async function deleteConditionalOrder(
+	id: string,
+): Promise<{ ok: boolean; id: string }> {
+	const res = await fetch(
+		`${base()}/conditional-orders/${encodeURIComponent(id)}`,
+		{ method: "DELETE" },
+	);
+	if (!res.ok) throw new Error(`/conditional-orders/${id} ${res.status}`);
+	return res.json() as Promise<{ ok: boolean; id: string }>;
 }
 
 export async function fetchOrderStatus(
@@ -449,7 +617,11 @@ export function streamPipeline(
 	return es;
 }
 
-export function buildDryRunPreview(decision: PocDecision): DryRunPreview {
+export function buildDryRunPreview(
+	decision: PocDecision,
+	lastPrice?: number,
+	atr?: number | null,
+): DryRunPreview {
 	if (decision.error) {
 		return {
 			status: "NO_TRADE",
@@ -468,16 +640,30 @@ export function buildDryRunPreview(decision: PocDecision): DryRunPreview {
 		};
 	}
 
-	const side = decision.action === "SELL" ? "sell" : "buy";
+	const plan = seedPlan(decision, lastPrice ?? undefined, atr);
+	if (!plan) {
+		const side = decision.action === "SELL" ? "sell" : "buy";
+		return {
+			status: "DRY_RUN",
+			reason: "Execution preview only",
+			would_call: [
+				{
+					tool: "place_stock_order",
+					symbol: decision.symbol,
+					side,
+					notional: decision.position_size,
+					notional_position_size: decision.position_size,
+				},
+			],
+			decision,
+		};
+	}
+	const built = buildWouldCall(plan);
 	return {
 		status: "DRY_RUN",
 		reason: "Execution preview only",
-		would_call: {
-			tool: "place_stock_order",
-			symbol: decision.symbol,
-			side,
-			notional_position_size: decision.position_size,
-		},
+		would_call: built.would_call,
 		decision,
+		risk: built.risk,
 	};
 }
