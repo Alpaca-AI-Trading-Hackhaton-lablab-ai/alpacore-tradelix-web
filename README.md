@@ -38,6 +38,12 @@ cp -n .env.example .env
 
 `.env` defaults are enough (`VITE_API_URL=/api`). Do **not** put Alpaca/Groq keys here — they belong in the backend `.env` or `PUT /settings`.
 
+## Deploy (single EC2)
+
+Same box as the backend: one `t3.medium`, both Compose stacks, `tradelix` network.
+Push this repo’s `main` and the backend `main` before pulling on the instance.
+Contract: [`../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md`](../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md).
+
 ## Run with Docker (recommended)
 
 From the **backend** repo first:
