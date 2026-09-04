@@ -469,7 +469,7 @@ export async function previewBracket(
 export async function executeBracket(
 	plan: PocBracketPlan,
 ): Promise<PocOrderResult> {
-	return postJsonBody<PocOrderResult>("/bracket/execute", { plan });
+	return postJsonBody<PocOrderResult>("/execute", { plan });
 }
 
 export async function fetchConditionalOrders(

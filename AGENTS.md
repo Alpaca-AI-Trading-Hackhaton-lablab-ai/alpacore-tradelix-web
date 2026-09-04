@@ -4,7 +4,7 @@ TradeLix PoC dashboard. Consumes the FastAPI Python backend via `/api`.
 
 ## Before deploying or making breaking changes
 
-Read **[`../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md`](../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md)** — P1 is done (tick brackets, position-aware risk, fill listener). Remaining work is P2. Research that file with a lighter model + web search, then implement with a capable model.
+Read **[`../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md`](../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md)** — P1 and P2 are done (unified `/execute`, MCP via dispatch, critic, offline backtest). Research that file with a lighter model + web search, then implement with a capable model.
 
 **Edit and `git push` to `main`** when the backlog or deploy contract changes: this file,
 and in the backend repo `pendiente-alpacorp.md`, `AGENTS.md`, and `CLAUDE.md`. Local-only
