@@ -10,10 +10,16 @@ Read **[`../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md`]
 and in the backend repo `pendiente-alpacorp.md`, `AGENTS.md`, and `CLAUDE.md`. Local-only
 edits do not count.
 
-**Deploy target:** one Amazon EC2 **`t3.medium`** running **both** backend Compose
-(`tradelix-backend:8000`) and this frontend Compose (`:3200`, `/api` → backend). Push
+**Deploy target:** one Amazon EC2 **`t3.small`** running **both** backend Compose
+(`tradelix-backend:8000`) and this frontend Compose (`/api` → backend). Push
 both `main` branches, then pull on that single box. Do not split the stack across two
-instances.
+instances. The type is `t3.small`, not the originally planned `t3.medium`: the AWS
+account is on the Free Plan and rejects non-free-tier instance types.
+
+On the box a `docker-compose.override.yml` publishes this stack on **`80:80`** instead
+of `3200:80`, so `http://alpacorp.ribartra.org/` needs no port. This repo is **private**,
+so the instance cannot clone it — it is uploaded as a `git archive` tarball. Both are
+deploy-side concerns; keep the committed compose file on `3200` for local work.
 
 Uses Lightweight Charts v5 (`addSeries(AreaSeries, …)`).
 
