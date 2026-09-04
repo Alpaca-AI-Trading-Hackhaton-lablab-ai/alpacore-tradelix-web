@@ -2,8 +2,12 @@ services:
   tradelix-poc-web:
     build:
       context: .
+    # Same image/nginx in local and on the EC2 box. nginx always listens on
+    # container :80; only the host port changes. Default 3200 for local.
+    # On the box: WEB_PORT=80 in this project's .env (Compose interpolates it).
+    # Do not commit docker-compose.override.yml — it would bind :80 for everyone.
     ports:
-      - "3200:80"
+      - "${WEB_PORT:-3200}:80"
     environment:
       API_UPSTREAM: tradelix-backend:8000
     extra_hosts:
