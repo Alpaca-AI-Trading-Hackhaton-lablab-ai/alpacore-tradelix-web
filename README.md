@@ -40,9 +40,19 @@ cp -n .env.example .env
 
 ## Deploy (single EC2)
 
-Same box as the backend: one `t3.medium`, both Compose stacks, `tradelix` network.
+Same box as the backend: one `t3.small`, both Compose stacks, `tradelix` network.
 Push this repo’s `main` and the backend `main` before pulling on the instance.
 Contract: [`../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md`](../alpaca-ai-trading-agents-hackathon-lablab.ai/pendiente-alpacorp.md).
+
+Live at **http://alpacorp.ribartra.org/**. On the instance an override publishes this
+stack on `80:80` instead of `3200:80` so the domain carries no port; the committed
+compose file stays on `3200` for local work. `t3.small` rather than `t3.medium` because
+the AWS account is on the Free Plan.
+
+nginx gzips the bundle (581 KB → 179 KB) and serves `/assets/` as `immutable` for a
+year, since Vite fingerprints those filenames. `index.html` stays `no-cache` so a deploy
+is picked up at once. `text/event-stream` is deliberately excluded from `gzip_types`:
+buffering SSE to fill a compression window would stall the per-node pipeline updates.
 
 ## Run with Docker (recommended)
 
