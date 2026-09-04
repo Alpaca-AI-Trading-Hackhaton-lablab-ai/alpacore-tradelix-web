@@ -105,3 +105,9 @@ bun run check          # biome
 - shadcn/ui: `components.json`, alias `@/*`, tokens in `src/styles.css`. Add a component with `bunx shadcn@latest add button`.
 - Tailwind v4: no `tailwind.config.*`; the plugin is in `vite.config.ts`.
 - Planned layout (do not implement unless asked): [docs/to-do-better-ui.md](docs/to-do-better-ui.md).
+
+## Contributors
+
+- [@Baneado85](https://github.com/Baneado85)
+- [@ribartra](https://github.com/ribartra)
+
